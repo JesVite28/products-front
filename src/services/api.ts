@@ -5,7 +5,7 @@ export const api = axios.create({
     headers: {
         'Content-Type': 'application/json'
     }
-})
+});
 
 export interface Product {
     _id?: string;
@@ -13,9 +13,9 @@ export interface Product {
     price: number;
     description: string;
     stock: number;
-    date_caducity: string;
-    date_buy: string;
+    date_caducity: string; // ISO string
+    date_buy: string;      // ISO string
     provider: string;
     price_buy: number;
-    image?: string;
+    image?: string;        // base64
 }
