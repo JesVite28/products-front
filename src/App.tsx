@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   getProducts,
   getProductId,
@@ -10,6 +10,7 @@ import type { Product } from "./services/api";
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [id, setId] = useState("");
 
   const [showProductModal, setShowProductModal] = useState(false);
@@ -19,6 +20,8 @@ export default function App() {
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
+
+
   useEffect(() => {
     verTodos();
   }, []);
@@ -27,19 +30,36 @@ export default function App() {
     try {
       const data = await getProducts();
       setProducts(data);
+      setAllProducts(data);
     } catch (err) {
       console.error(err);
     }
   };
 
   const buscarPorId = async () => {
-    if (!id.trim()) return verTodos();
-    try {
-      const p = await getProductId(id.trim());
-      setProducts([p]);
-    } catch {
-      setProducts([]);
+    const term = id.trim();
+    if (!term) {
+    return verTodos();
     }
+    const esMongoID = /^[0-9a-fA-F]{24}$/.test(term);
+
+    if (esMongoID) {
+      try {
+        const producto = await getProductId(term);
+        setProducts([producto]);
+      } catch (err) {
+        console.error(err);
+        setProducts([]);
+      }
+    }
+
+    const lower = term.toLowerCase();
+    const filtrados = allProducts.filter(producto =>
+      producto.name.toLowerCase().includes(lower) ||
+      producto.description.toLowerCase().includes(lower) ||
+      producto.provider.toLowerCase().includes(lower)
+    );
+    setProducts(filtrados);
   };
 
   const abrirAgregar = () => {
@@ -109,6 +129,8 @@ export default function App() {
     setTimeout(() => setAlert(null), 2500);
   };
 
+  const handleMenuEnter = () => setMenuOpen(true);
+  const handleMenuLeave = () => setMenuOpen(false);
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-gray-100 overflow-x-hidden">
       <style>{`
@@ -140,8 +162,16 @@ export default function App() {
         </div>
       )}
 
+      <div
+        className="fixed top-0 left-0 h-full w-2 z-30"
+        onMouseEnter={handleMenuEnter}
+      />
       {/* DRAWER LATERAL */}
-      <aside className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? 'drawer-open' : 'drawer-closed'}`}>
+      <aside className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? 'drawer-open' : 'drawer-closed'
+        }`}
+        onMouseEnter={handleMenuEnter}
+        onMouseLeave={handleMenuLeave}
+        >
         <h2 className="text-2xl font-bold mb-6">Menú</h2>
         <ul className="flex flex-col gap-4">
           <li>
@@ -160,7 +190,7 @@ export default function App() {
         <header className="glass border-b fixed w-full top-0 left-0 z-20">
           <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button onClick={() => setMenuOpen(!menuOpen)} className="text-gray-200 text-2xl btn-animate">☰</button>
+              {/* <button onClick={() => setMenuOpen(!menuOpen)} className="text-gray-200 text-2xl btn-animate">☰</button> */}
               <h1 className="text-xl font-bold">Productos</h1>
             </div>
             <div className="flex gap-2">
