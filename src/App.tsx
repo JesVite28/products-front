@@ -23,6 +23,11 @@ export default function App() {
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
+  const [alert, setAlert] = useState<{
+    type: "success" | "error";
+    msg: string;
+  } | null>(null);
+
   useEffect(() => {
     verTodos();
   }, []);
@@ -83,11 +88,6 @@ export default function App() {
     setDetailProduct(p);
   };
 
-  const [alert, setAlert] = useState<{
-    type: "success" | "error";
-    msg: string;
-  } | null>(null);
-
   const mostrarAlerta = (type: "success" | "error", msg: string) => {
     setAlert({ type, msg });
     setTimeout(() => setAlert(null), 2500);
@@ -95,11 +95,26 @@ export default function App() {
 
   const guardarProducto = async (data: any) => {
     try {
+      const priceNumber = Number(data.price);
+      const stockNumber = Number(data.stock);
+      const priceBuyNumber = Number(data.price_buy);
+
+      if (isNaN(priceNumber) || isNaN(stockNumber) || isNaN(priceBuyNumber)) {
+        mostrarAlerta("error", "Los campos numéricos deben ser válidos");
+        return;
+      }
+
+      // Validación de stock (0 o positivo, negativos no permitidos)
+      if (stockNumber < 0) {
+        mostrarAlerta("error", "El stock no puede ser negativo");
+        return;
+      }
+
       const payload: Product = {
         ...data,
-        price: Number(data.price),
-        stock: Number(data.stock),
-        price_buy: Number(data.price_buy),
+        price: priceNumber,
+        stock: stockNumber,
+        price_buy: priceBuyNumber,
         date_buy: data.purchaseDate,
         date_caducity: data.expirationDate,
         provider: data.supplier,
@@ -107,17 +122,52 @@ export default function App() {
       };
 
       if (editingProduct) {
-        await updateProduct(editingProduct._id!, payload);
+        // Actualizar en backend
+        const updatedFromServer = await updateProduct(
+          editingProduct._id!,
+          payload
+        );
+
+        // Muy importante:
+        // - Mezclamos: producto original + respuesta del servidor + payload enviado
+        // - El payload (lo que el usuario acaba de poner) tiene la ÚLTIMA palabra,
+        //   así garantizamos que stock=0 y otros cambios se reflejen en la UI,
+        //   incluso si el backend ignora valores "falsy".
+        const updatedProduct: Product = {
+          ...(editingProduct as Product),
+          ...(updatedFromServer || {}),
+          ...payload,
+        };
+
+        // Actualizar estados locales para que el cambio se vea inmediatamente
+        setProducts((prev) =>
+          prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
+        );
+        setAllProducts((prev) =>
+          prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
+        );
+
+        // Si el modal de detalle está abierto sobre este producto, lo actualizamos también
+        setDetailProduct((prev) =>
+          prev && prev._id === editingProduct._id ? updatedProduct : prev
+        );
+
         mostrarAlerta("success", "Producto actualizado correctamente ✅");
       } else {
-        await createProduct(payload);
+        // Crear producto nuevo
+        const createdFromServer = await createProduct(payload);
+        const newProduct: Product = createdFromServer || (payload as Product);
+
+        setProducts((prev) => [...prev, newProduct]);
+        setAllProducts((prev) => [...prev, newProduct]);
+
         mostrarAlerta("success", "Producto creado correctamente ✅");
       }
+
       setShowProductModal(false);
-      verTodos();
     } catch (err) {
       console.error("Error al guardar producto:", err);
-      // Mensaje específico cuando hay errores al guardar (incluyendo imagen)
+      // Alerta delante del modal cuando hay errores al guardar
       mostrarAlerta("error", IMAGE_ERROR_MSG);
     }
   };
@@ -126,9 +176,22 @@ export default function App() {
     try {
       if (deleteTarget) {
         await deleteProduct(deleteTarget._id!);
+
+        // Actualizar estados tras eliminar
+        setProducts((prev) =>
+          prev.filter((p) => p._id !== deleteTarget._id)
+        );
+        setAllProducts((prev) =>
+          prev.filter((p) => p._id !== deleteTarget._id)
+        );
+
+        // Cerrar detalle si es el mismo producto
+        setDetailProduct((prev) =>
+          prev && prev._id === deleteTarget._id ? null : prev
+        );
+
         mostrarAlerta("success", "Producto eliminado correctamente ✅");
         setShowDeleteModal(false);
-        verTodos();
       }
     } catch (err) {
       console.error("Error al eliminar producto:", err);
@@ -271,6 +334,20 @@ export default function App() {
                     <p className="text-sm text-gray-300 mt-1 line-clamp-2">
                       {p.description}
                     </p>
+
+                    {/* Badge de stock en el card:
+                        - Rojo si stock <= 0
+                        - Verde si stock > 0 */}
+                    <div className="mt-3 flex justify-between items-center text-sm">
+                      <span
+                        className={`px-2 py-1 rounded-full font-semibold ${p.stock > 0
+                            ? "bg-green-600 text-white"
+                            : "bg-red-600 text-white"
+                          }`}
+                      >
+                        Stock: {p.stock}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="card-buttons">
@@ -325,16 +402,25 @@ export default function App() {
 
 function ModalProducto({ producto, onClose, onSave }: any) {
   const [form, setForm] = useState({
-    name: producto?.name || "",
-    price: producto?.price || "",
-    description: producto?.description || "",
-    stock: producto?.stock || "",
+    name: producto?.name ?? "",
+    price:
+      producto?.price !== undefined && producto?.price !== null
+        ? String(producto.price)
+        : "",
+    description: producto?.description ?? "",
+    stock:
+      producto?.stock !== undefined && producto?.stock !== null
+        ? String(producto.stock)
+        : "",
     expirationDate: producto?.date_caducity
       ? producto.date_caducity.split("T")[0]
       : "",
     purchaseDate: producto?.date_buy ? producto.date_buy.split("T")[0] : "",
-    supplier: producto?.provider || "",
-    price_buy: producto?.price_buy || "",
+    supplier: producto?.provider ?? "",
+    price_buy:
+      producto?.price_buy !== undefined && producto?.price_buy !== null
+        ? String(producto.price_buy)
+        : "",
   });
 
   const [image, setImage] = useState<string | File>(producto?.image || "");
@@ -368,9 +454,10 @@ function ModalProducto({ producto, onClose, onSave }: any) {
   const handleChange = (e: any) => {
     const { name, value } = e.target;
 
-    // Validación numérica para price, stock y price_buy (solo números y decimales)
+    // Validación numérica para price, stock y price_buy (permitimos negativos
+    // en el input para poder escribir, pero luego validamos en submit).
     if (name === "price" || name === "stock" || name === "price_buy") {
-      const regex = /^\d*\.?\d*$/; // permite "", "123", "123.", "123.45"
+      const regex = /^-?\d*\.?\d*$/; // ahora permite "-", "-1", "1.5", etc.
       if (value === "" || regex.test(value)) {
         setForm({ ...form, [name]: value });
       }
@@ -395,6 +482,17 @@ function ModalProducto({ producto, onClose, onSave }: any) {
       return;
     }
 
+    // Validación específica de stock (0 o positivo)
+    const stockNumber = Number(form.stock);
+    if (isNaN(stockNumber)) {
+      setFileAlert("El stock debe ser un número válido");
+      return;
+    }
+    if (stockNumber < 0) {
+      setFileAlert("El stock no puede ser negativo");
+      return;
+    }
+
     let imageBase64 = typeof image === "string" ? image : "";
     if (image instanceof File) {
       try {
@@ -411,7 +509,6 @@ function ModalProducto({ producto, onClose, onSave }: any) {
       await onSave({ ...form, image: imageBase64 });
     } catch (err) {
       console.error("Error al guardar desde el modal:", err);
-      // Error al guardar (crear/editar) el producto
       setFileAlert(IMAGE_ERROR_MSG);
     }
   };
@@ -600,8 +697,19 @@ function ModalDetalle({ producto, onClose }: any) {
           <div>
             <b>Precio:</b> ${producto.price}
           </div>
-          <div>
-            <b>Stock:</b> {producto.stock}
+          <div className="flex items-center gap-2">
+            <b>Stock:</b>
+            {/* Badge de stock en el detalle:
+                - Rojo si stock <= 0
+                - Verde si stock > 0 */}
+            <span
+              className={`px-2 py-1 rounded-full font-semibold text-xs ${producto.stock > 0
+                  ? "bg-green-600 text-white"
+                  : "bg-red-600 text-white"
+                }`}
+            >
+              {producto.stock}
+            </span>
           </div>
           <div>
             <b>Proveedor:</b> {producto.provider}
