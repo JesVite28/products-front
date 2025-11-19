@@ -28,15 +28,28 @@ export default function App() {
     msg: string;
   } | null>(null);
 
+  // Overrides locales para que los cambios (como stock = 0) se respeten
+  // aunque el backend ignore el 0.
+  const [localOverrides, setLocalOverrides] = useState<Record<string, Product>>(
+    {}
+  );
+
   useEffect(() => {
     verTodos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const aplicarOverrides = (lista: Product[]): Product[] =>
+    lista.map((p) =>
+      p._id && localOverrides[p._id] ? localOverrides[p._id] : p
+    );
 
   const verTodos = async () => {
     try {
       const data = await getProducts();
-      setProducts(data);
-      setAllProducts(data);
+      const merged = aplicarOverrides(data);
+      setProducts(merged);
+      setAllProducts(merged);
     } catch (err) {
       console.error(err);
     }
@@ -52,7 +65,11 @@ export default function App() {
     if (esMongoID) {
       try {
         const producto = await getProductId(term);
-        setProducts([producto]);
+        const merged =
+          producto._id && localOverrides[producto._id]
+            ? localOverrides[producto._id]
+            : producto;
+        setProducts([merged]);
       } catch (err) {
         console.error(err);
         setProducts([]);
@@ -104,7 +121,6 @@ export default function App() {
         return;
       }
 
-      // Validación de stock (0 o positivo, negativos no permitidos)
       if (stockNumber < 0) {
         mostrarAlerta("error", "El stock no puede ser negativo");
         return;
@@ -122,41 +138,42 @@ export default function App() {
       };
 
       if (editingProduct) {
-        // Actualizar en backend
-        const updatedFromServer = await updateProduct(
-          editingProduct._id!,
-          payload
-        );
+        // Persistimos en backend, pero el estado lo controlamos nosotros
+        await updateProduct(editingProduct._id!, payload);
 
-        // Muy importante:
-        // - Mezclamos: producto original + respuesta del servidor + payload enviado
-        // - El payload (lo que el usuario acaba de poner) tiene la ÚLTIMA palabra,
-        //   así garantizamos que stock=0 y otros cambios se reflejen en la UI,
-        //   incluso si el backend ignora valores "falsy".
         const updatedProduct: Product = {
           ...(editingProduct as Product),
-          ...(updatedFromServer || {}),
           ...payload,
         };
 
-        // Actualizar estados locales para que el cambio se vea inmediatamente
+        if (updatedProduct._id) {
+          setLocalOverrides((prev) => ({
+            ...prev,
+            [updatedProduct._id!]: updatedProduct,
+          }));
+        }
+
         setProducts((prev) =>
           prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
         );
         setAllProducts((prev) =>
           prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
         );
-
-        // Si el modal de detalle está abierto sobre este producto, lo actualizamos también
         setDetailProduct((prev) =>
           prev && prev._id === editingProduct._id ? updatedProduct : prev
         );
 
         mostrarAlerta("success", "Producto actualizado correctamente ✅");
       } else {
-        // Crear producto nuevo
         const createdFromServer = await createProduct(payload);
         const newProduct: Product = createdFromServer || (payload as Product);
+
+        if (newProduct._id) {
+          setLocalOverrides((prev) => ({
+            ...prev,
+            [newProduct._id!]: newProduct,
+          }));
+        }
 
         setProducts((prev) => [...prev, newProduct]);
         setAllProducts((prev) => [...prev, newProduct]);
@@ -167,7 +184,6 @@ export default function App() {
       setShowProductModal(false);
     } catch (err) {
       console.error("Error al guardar producto:", err);
-      // Alerta delante del modal cuando hay errores al guardar
       mostrarAlerta("error", IMAGE_ERROR_MSG);
     }
   };
@@ -177,7 +193,6 @@ export default function App() {
       if (deleteTarget) {
         await deleteProduct(deleteTarget._id!);
 
-        // Actualizar estados tras eliminar
         setProducts((prev) =>
           prev.filter((p) => p._id !== deleteTarget._id)
         );
@@ -185,7 +200,12 @@ export default function App() {
           prev.filter((p) => p._id !== deleteTarget._id)
         );
 
-        // Cerrar detalle si es el mismo producto
+        setLocalOverrides((prev) => {
+          const clone = { ...prev };
+          if (deleteTarget._id) delete clone[deleteTarget._id];
+          return clone;
+        });
+
         setDetailProduct((prev) =>
           prev && prev._id === deleteTarget._id ? null : prev
         );
@@ -310,63 +330,64 @@ export default function App() {
             <div className="glass border p-8 text-center">Sin resultados.</div>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {products.map((p) => (
-                <article
-                  key={p._id}
-                  className="glass border rounded-xl overflow-hidden shadow-lg card-hover group"
-                >
-                  <img
-                    src={
-                      p.image ||
-                      "https://via.placeholder.com/600x400?text=Producto"
-                    }
-                    alt={p.name}
-                    className="w-full h-40 object-cover"
-                    onClick={() => abrirDetalle(p)}
-                  />
-                  <div className="p-4">
-                    <div className="flex items-start justify-between">
-                      <h3 className="font-semibold">{p.name}</h3>
-                      <span className="text-indigo-400 font-medium">
-                        ${p.price}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-300 mt-1 line-clamp-2">
-                      {p.description}
-                    </p>
+              {products.map((p) => {
+                const stockNumber = Number(p.stock ?? 0);
 
-                    {/* Badge de stock en el card:
-                        - Rojo si stock <= 0
-                        - Verde si stock > 0 */}
-                    <div className="mt-3 flex justify-between items-center text-sm">
-                      <span
-                        className={`px-2 py-1 rounded-full font-semibold ${p.stock > 0
-                            ? "bg-green-600 text-white"
-                            : "bg-red-600 text-white"
-                          }`}
+                return (
+                  <article
+                    key={p._id}
+                    className="glass border rounded-xl overflow-hidden shadow-lg card-hover group"
+                  >
+                    <img
+                      src={
+                        p.image ||
+                        "https://via.placeholder.com/600x400?text=Producto"
+                      }
+                      alt={p.name}
+                      className="w-full h-40 object-cover"
+                      onClick={() => abrirDetalle(p)}
+                    />
+                    <div className="p-4">
+                      <div className="flex items-start justify-between">
+                        <h3 className="font-semibold">{p.name}</h3>
+                        <span className="text-indigo-400 font-medium">
+                          ${p.price}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-300 mt-1 line-clamp-2">
+                        {p.description}
+                      </p>
+
+                      <div className="mt-3 flex justify-between items-center text-sm">
+                        <span
+                          className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
+                              ? "bg-green-600 text-white"
+                              : "bg-red-600 text-white"
+                            }`}
+                        >
+                          Existencias: {stockNumber}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="card-buttons">
+                      <button
+                        onClick={() => abrirEditar(p)}
+                        className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate"
+                        autoComplete="off"
                       >
-                        Stock: {p.stock}
-                      </span>
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => abrirEliminar(p)}
+                        className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate"
+                      >
+                        Eliminar
+                      </button>
                     </div>
-                  </div>
-
-                  <div className="card-buttons">
-                    <button
-                      onClick={() => abrirEditar(p)}
-                      className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate"
-                      autoComplete="off"
-                    >
-                      Editar
-                    </button>
-                    <button
-                      onClick={() => abrirEliminar(p)}
-                      className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate"
-                    >
-                      Eliminar
-                    </button>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
@@ -397,7 +418,7 @@ export default function App() {
 }
 
 // =====================================================================================
-// MODAL PRODUCTO (VALIDACIÓN DE IMAGEN + ALERTA + VALIDACIÓN NUMÉRICA)
+// MODAL PRODUCTO
 // =====================================================================================
 
 function ModalProducto({ producto, onClose, onSave }: any) {
@@ -424,7 +445,6 @@ function ModalProducto({ producto, onClose, onSave }: any) {
   });
 
   const [image, setImage] = useState<string | File>(producto?.image || "");
-
   const [fileAlert, setFileAlert] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -454,10 +474,8 @@ function ModalProducto({ producto, onClose, onSave }: any) {
   const handleChange = (e: any) => {
     const { name, value } = e.target;
 
-    // Validación numérica para price, stock y price_buy (permitimos negativos
-    // en el input para poder escribir, pero luego validamos en submit).
     if (name === "price" || name === "stock" || name === "price_buy") {
-      const regex = /^-?\d*\.?\d*$/; // ahora permite "-", "-1", "1.5", etc.
+      const regex = /^-?\d*\.?\d*$/;
       if (value === "" || regex.test(value)) {
         setForm({ ...form, [name]: value });
       }
@@ -482,7 +500,6 @@ function ModalProducto({ producto, onClose, onSave }: any) {
       return;
     }
 
-    // Validación específica de stock (0 o positivo)
     const stockNumber = Number(form.stock);
     if (isNaN(stockNumber)) {
       setFileAlert("El stock debe ser un número válido");
@@ -499,7 +516,6 @@ function ModalProducto({ producto, onClose, onSave }: any) {
         imageBase64 = await toBase64(image);
       } catch (err) {
         console.error(err);
-        // Error al convertir/guardar la imagen
         setFileAlert(IMAGE_ERROR_MSG);
         return;
       }
@@ -681,6 +697,8 @@ function ModalProducto({ producto, onClose, onSave }: any) {
 // =====================================================================================
 
 function ModalDetalle({ producto, onClose }: any) {
+  const stockNumber = Number(producto.stock ?? 0);
+
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
       <div className="glass max-w-xl w-full p-6 rounded-xl animate-pop overflow-y-auto max-h-[90vh]">
@@ -698,17 +716,14 @@ function ModalDetalle({ producto, onClose }: any) {
             <b>Precio:</b> ${producto.price}
           </div>
           <div className="flex items-center gap-2">
-            <b>Stock:</b>
-            {/* Badge de stock en el detalle:
-                - Rojo si stock <= 0
-                - Verde si stock > 0 */}
+            <b>Existencias:</b>
             <span
-              className={`px-2 py-1 rounded-full font-semibold text-xs ${producto.stock > 0
+              className={`px-2 py-1 rounded-full font-semibold text-xs ${stockNumber > 0
                   ? "bg-green-600 text-white"
                   : "bg-red-600 text-white"
                 }`}
             >
-              {producto.stock}
+              {stockNumber}
             </span>
           </div>
           <div>
