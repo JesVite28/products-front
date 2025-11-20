@@ -8,6 +8,9 @@ import {
 } from "./services/productService";
 import type { Product } from "./services/api";
 
+const IMAGE_ERROR_MSG =
+  "por favor seleccione una imagen con el formato válido no mayor a 5mb";
+
 export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
@@ -20,17 +23,33 @@ export default function App() {
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
+  const [alert, setAlert] = useState<{
+    type: "success" | "error";
+    msg: string;
+  } | null>(null);
 
+  // Overrides locales para que los cambios (como stock = 0) se respeten
+  // aunque el backend ignore el 0.
+  const [localOverrides, setLocalOverrides] = useState<Record<string, Product>>(
+    {}
+  );
 
   useEffect(() => {
     verTodos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const aplicarOverrides = (lista: Product[]): Product[] =>
+    lista.map((p) =>
+      p._id && localOverrides[p._id] ? localOverrides[p._id] : p
+    );
 
   const verTodos = async () => {
     try {
       const data = await getProducts();
-      setProducts(data);
-      setAllProducts(data);
+      const merged = aplicarOverrides(data);
+      setProducts(merged);
+      setAllProducts(merged);
     } catch (err) {
       console.error(err);
     }
@@ -39,14 +58,18 @@ export default function App() {
   const buscarPorId = async () => {
     const term = id.trim();
     if (!term) {
-    return verTodos();
+      return verTodos();
     }
     const esMongoID = /^[0-9a-fA-F]{24}$/.test(term);
 
     if (esMongoID) {
       try {
         const producto = await getProductId(term);
-        setProducts([producto]);
+        const merged =
+          producto._id && localOverrides[producto._id]
+            ? localOverrides[producto._id]
+            : producto;
+        setProducts([merged]);
       } catch (err) {
         console.error(err);
         setProducts([]);
@@ -54,10 +77,11 @@ export default function App() {
     }
 
     const lower = term.toLowerCase();
-    const filtrados = allProducts.filter(producto =>
-      producto.name.toLowerCase().includes(lower) ||
-      producto.description.toLowerCase().includes(lower) ||
-      producto.provider.toLowerCase().includes(lower)
+    const filtrados = allProducts.filter(
+      (producto) =>
+        producto.name.toLowerCase().includes(lower) ||
+        producto.description.toLowerCase().includes(lower) ||
+        producto.provider.toLowerCase().includes(lower)
     );
     setProducts(filtrados);
   };
@@ -81,13 +105,32 @@ export default function App() {
     setDetailProduct(p);
   };
 
+  const mostrarAlerta = (type: "success" | "error", msg: string) => {
+    setAlert({ type, msg });
+    setTimeout(() => setAlert(null), 2500);
+  };
+
   const guardarProducto = async (data: any) => {
     try {
+      const priceNumber = Number(data.price);
+      const stockNumber = Number(data.stock);
+      const priceBuyNumber = Number(data.price_buy);
+
+      if (isNaN(priceNumber) || isNaN(stockNumber) || isNaN(priceBuyNumber)) {
+        mostrarAlerta("error", "Los campos numéricos deben ser válidos");
+        return;
+      }
+
+      if (stockNumber < 0) {
+        mostrarAlerta("error", "El stock no puede ser negativo");
+        return;
+      }
+
       const payload: Product = {
         ...data,
-        price: Number(data.price),
-        stock: Number(data.stock),
-        price_buy: Number(data.price_buy),
+        price: priceNumber,
+        stock: stockNumber,
+        price_buy: priceBuyNumber,
         date_buy: data.purchaseDate,
         date_caducity: data.expirationDate,
         provider: data.supplier,
@@ -95,17 +138,53 @@ export default function App() {
       };
 
       if (editingProduct) {
+        // Persistimos en backend, pero el estado lo controlamos nosotros
         await updateProduct(editingProduct._id!, payload);
+
+        const updatedProduct: Product = {
+          ...(editingProduct as Product),
+          ...payload,
+        };
+
+        if (updatedProduct._id) {
+          setLocalOverrides((prev) => ({
+            ...prev,
+            [updatedProduct._id!]: updatedProduct,
+          }));
+        }
+
+        setProducts((prev) =>
+          prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
+        );
+        setAllProducts((prev) =>
+          prev.map((p) => (p._id === editingProduct._id ? updatedProduct : p))
+        );
+        setDetailProduct((prev) =>
+          prev && prev._id === editingProduct._id ? updatedProduct : prev
+        );
+
         mostrarAlerta("success", "Producto actualizado correctamente ✅");
       } else {
-        await createProduct(payload);
+        const createdFromServer = await createProduct(payload);
+        const newProduct: Product = createdFromServer || (payload as Product);
+
+        if (newProduct._id) {
+          setLocalOverrides((prev) => ({
+            ...prev,
+            [newProduct._id!]: newProduct,
+          }));
+        }
+
+        setProducts((prev) => [...prev, newProduct]);
+        setAllProducts((prev) => [...prev, newProduct]);
+
         mostrarAlerta("success", "Producto creado correctamente ✅");
       }
+
       setShowProductModal(false);
-      verTodos();
     } catch (err) {
       console.error("Error al guardar producto:", err);
-      mostrarAlerta("error", "Algo salió mal al guardar ❌");
+      mostrarAlerta("error", IMAGE_ERROR_MSG);
     }
   };
 
@@ -113,9 +192,26 @@ export default function App() {
     try {
       if (deleteTarget) {
         await deleteProduct(deleteTarget._id!);
+
+        setProducts((prev) =>
+          prev.filter((p) => p._id !== deleteTarget._id)
+        );
+        setAllProducts((prev) =>
+          prev.filter((p) => p._id !== deleteTarget._id)
+        );
+
+        setLocalOverrides((prev) => {
+          const clone = { ...prev };
+          if (deleteTarget._id) delete clone[deleteTarget._id];
+          return clone;
+        });
+
+        setDetailProduct((prev) =>
+          prev && prev._id === deleteTarget._id ? null : prev
+        );
+
         mostrarAlerta("success", "Producto eliminado correctamente ✅");
         setShowDeleteModal(false);
-        verTodos();
       }
     } catch (err) {
       console.error("Error al eliminar producto:", err);
@@ -123,14 +219,9 @@ export default function App() {
     }
   };
 
-  const [alert, setAlert] = useState<{ type: "success" | "error"; msg: string } | null>(null);
-  const mostrarAlerta = (type: "success" | "error", msg: string) => {
-    setAlert({ type, msg });
-    setTimeout(() => setAlert(null), 2500);
-  };
-
   const handleMenuEnter = () => setMenuOpen(true);
   const handleMenuLeave = () => setMenuOpen(false);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-gray-100 overflow-x-hidden">
       <style>{`
@@ -157,7 +248,12 @@ export default function App() {
       `}</style>
 
       {alert && (
-        <div className={`fixed top-5 left-1/2 -translate-x-1/2 z-50 p-4 rounded-lg font-semibold animate-pop ${alert.type === "success" ? "bg-green-500 text-white" : "bg-red-500 text-white"}`}>
+        <div
+          className={`fixed top-5 left-1/2 -translate-x-1/2 z-[9999] p-4 rounded-lg font-semibold animate-pop ${alert.type === "success"
+            ? "bg-green-500 text-white"
+            : "bg-red-500 text-white"
+            }`}
+        >
           {alert.msg}
         </div>
       )}
@@ -166,31 +262,47 @@ export default function App() {
         className="fixed top-0 left-0 h-full w-2 z-30"
         onMouseEnter={handleMenuEnter}
       />
-      {/* DRAWER LATERAL */}
-      <aside className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? 'drawer-open' : 'drawer-closed'
-        }`}
+
+      <aside
+        className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? "drawer-open" : "drawer-closed"
+          }`}
         onMouseEnter={handleMenuEnter}
         onMouseLeave={handleMenuLeave}
-        >
+      >
         <h2 className="text-2xl font-bold mb-6">Menú</h2>
         <ul className="flex flex-col gap-4">
           <li>
-            <button onClick={verTodos} className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400">Ver todos</button>
+            <button
+              onClick={verTodos}
+              className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400"
+            >
+              Ver todos
+            </button>
           </li>
           <li>
-            <button onClick={abrirAgregar} className="btn-animate w-full text-left text-gray-100 hover:text-green-400">➕ Agregar producto</button>
+            <button
+              onClick={abrirAgregar}
+              className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
+            >
+              ➕ Agregar producto
+            </button>
           </li>
         </ul>
       </aside>
 
-      {menuOpen && <div onClick={() => setMenuOpen(false)} className="fixed inset-0 bg-black/50 z-30"></div>}
+      {menuOpen && (
+        <div
+          onClick={() => setMenuOpen(false)}
+          className="fixed inset-0 bg-black/50 z-30"
+        ></div>
+      )}
 
-      <main className={`transition-all duration-300 ${menuOpen ? 'ml-64' : ''}`}>
-        {/* Header */}
+      <main
+        className={`transition-all duration-300 ${menuOpen ? "ml-64" : ""}`}
+      >
         <header className="glass border-b fixed w-full top-0 left-0 z-20">
           <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* <button onClick={() => setMenuOpen(!menuOpen)} className="text-gray-200 text-2xl btn-animate">☰</button> */}
               <h1 className="text-xl font-bold">Productos</h1>
             </div>
             <div className="flex gap-2">
@@ -201,7 +313,12 @@ export default function App() {
                 placeholder="Buscar por ID…"
                 className="h-10 w-64 max-w-full px-3 rounded glass border text-gray-200 placeholder-gray-400"
               />
-              <button onClick={buscarPorId} className="h-10 px-4 rounded bg-indigo-600 text-white btn-animate">Buscar</button>
+              <button
+                onClick={buscarPorId}
+                className="h-10 px-4 rounded bg-indigo-600 text-white btn-animate"
+              >
+                Buscar
+              </button>
             </div>
           </div>
         </header>
@@ -213,52 +330,123 @@ export default function App() {
             <div className="glass border p-8 text-center">Sin resultados.</div>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {products.map((p) => (
-                <article key={p._id} className="glass border rounded-xl overflow-hidden shadow-lg card-hover group">
-                  <img src={p.image || "https://via.placeholder.com/600x400?text=Producto"} alt={p.name} className="w-full h-40 object-cover" onClick={() => abrirDetalle(p)} />
-                  <div className="p-4">
-                    <div className="flex items-start justify-between">
-                      <h3 className="font-semibold">{p.name}</h3>
-                      <span className="text-indigo-400 font-medium">${p.price}</span>
+              {products.map((p) => {
+                const stockNumber = Number(p.stock ?? 0);
+
+                return (
+                  <article
+                    key={p._id}
+                    className="glass border rounded-xl overflow-hidden shadow-lg card-hover group"
+                  >
+                    <img
+                      src={
+                        p.image ||
+                        "https://via.placeholder.com/600x400?text=Producto"
+                      }
+                      alt={p.name}
+                      className="w-full h-40 object-cover"
+                      onClick={() => abrirDetalle(p)}
+                    />
+                    <div className="p-4">
+                      <div className="flex items-start justify-between">
+                        <h3 className="font-semibold">{p.name}</h3>
+                        <span className="text-indigo-400 font-medium">
+                          ${p.price}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-300 mt-1 line-clamp-2">
+                        {p.description}
+                      </p>
+
+                      <div className="mt-3 flex justify-between items-center text-sm">
+                        <span
+                          className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
+                            ? "bg-green-600 text-white"
+                            : "bg-red-600 text-white"
+                            }`}
+                        >
+                          Existencias: {stockNumber}
+                        </span>
+                      </div>
                     </div>
-                    <p className="text-sm text-gray-300 mt-1 line-clamp-2">{p.description}</p>
-                  </div>
-                  {/* BOTONES OCULTOS */}
-                  <div className="card-buttons">
-                    <button onClick={() => abrirEditar(p)} className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate" autoComplete="off" >Editar </button>
-                    <button onClick={() => abrirEliminar(p)} className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate">Eliminar</button>
-                  </div>
-                </article>
-              ))}
+
+                    <div className="card-buttons">
+                      <button
+                        onClick={() => abrirEditar(p)}
+                        className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate"
+                        autoComplete="off"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => abrirEliminar(p)}
+                        className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
       </main>
 
-      {showProductModal && <ModalProducto producto={editingProduct} onClose={() => setShowProductModal(false)} onSave={guardarProducto} />}
-      {showDeleteModal && <ModalEliminar producto={deleteTarget} onClose={() => setShowDeleteModal(false)} onConfirm={confirmarEliminar} />}
-      {detailProduct && <ModalDetalle producto={detailProduct} onClose={() => setDetailProduct(null)} />}
+      {showProductModal && (
+        <ModalProducto
+          producto={editingProduct}
+          onClose={() => setShowProductModal(false)}
+          onSave={guardarProducto}
+        />
+      )}
+      {showDeleteModal && (
+        <ModalEliminar
+          producto={deleteTarget}
+          onClose={() => setShowDeleteModal(false)}
+          onConfirm={confirmarEliminar}
+        />
+      )}
+      {detailProduct && (
+        <ModalDetalle
+          producto={detailProduct}
+          onClose={() => setDetailProduct(null)}
+        />
+      )}
     </div>
   );
 }
 
-// --------------------------
-// Modal Producto
-// --------------------------
+// =====================================================================================
+// MODAL PRODUCTO
+// =====================================================================================
+
 function ModalProducto({ producto, onClose, onSave }: any) {
   const [form, setForm] = useState({
-    name: producto?.name || "",
-    price: producto?.price || "",
-    description: producto?.description || "",
-    stock: producto?.stock || "",
-    expirationDate: producto?.date_caducity ? producto.date_caducity.split("T")[0] : "",
+    name: producto?.name ?? "",
+    price:
+      producto?.price !== undefined && producto?.price !== null
+        ? String(producto.price)
+        : "",
+    description: producto?.description ?? "",
+    stock:
+      producto?.stock !== undefined && producto?.stock !== null
+        ? String(producto.stock)
+        : "",
+    expirationDate: producto?.date_caducity
+      ? producto.date_caducity.split("T")[0]
+      : "",
     purchaseDate: producto?.date_buy ? producto.date_buy.split("T")[0] : "",
-    supplier: producto?.provider || "",
-    price_buy: producto?.price_buy || "",
+    supplier: producto?.provider ?? "",
+    price_buy:
+      producto?.price_buy !== undefined && producto?.price_buy !== null
+        ? String(producto.price_buy)
+        : "",
   });
 
   const [image, setImage] = useState<string | File>(producto?.image || "");
-  const [error, setError] = useState("");
+  const [fileAlert, setFileAlert] = useState("");
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleDrop = (e: any) => {
@@ -267,21 +455,35 @@ function ModalProducto({ producto, onClose, onSave }: any) {
   };
 
   const handleFile = (file: File) => {
-    const maxSize = 100 * 1024 * 1024; // 100 MB
+    const maxSize = 5 * 1024 * 1024;
+
     if (!file.type.startsWith("image/")) {
-      setError("Solo se permiten imágenes");
+      setFileAlert(IMAGE_ERROR_MSG);
       return;
     }
+
     if (file.size > maxSize) {
-      setError("La imagen no puede superar los 100 MB");
+      setFileAlert(IMAGE_ERROR_MSG);
       return;
     }
-    setError("");
+
+    setFileAlert("");
     setImage(file);
   };
 
-  const handleChange = (e: any) =>
-    setForm({ ...form, [e.target.name]: e.target.value });
+  const handleChange = (e: any) => {
+    const { name, value } = e.target;
+
+    if (name === "price" || name === "stock" || name === "price_buy") {
+      const regex = /^-?\d*\.?\d*$/;
+      if (value === "" || regex.test(value)) {
+        setForm({ ...form, [name]: value });
+      }
+      return;
+    }
+
+    setForm({ ...form, [name]: value });
+  };
 
   const toBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -294,10 +496,19 @@ function ModalProducto({ producto, onClose, onSave }: any) {
   const submit = async () => {
     const values = Object.values(form);
     if (values.some((v) => v === "" || v === null)) {
-      setError("Todos los campos son obligatorios");
+      setFileAlert("Todos los campos son obligatorios");
       return;
     }
-    setError("");
+
+    const stockNumber = Number(form.stock);
+    if (isNaN(stockNumber)) {
+      setFileAlert("El stock debe ser un número válido");
+      return;
+    }
+    if (stockNumber < 0) {
+      setFileAlert("El stock no puede ser negativo");
+      return;
+    }
 
     let imageBase64 = typeof image === "string" ? image : "";
     if (image instanceof File) {
@@ -305,118 +516,270 @@ function ModalProducto({ producto, onClose, onSave }: any) {
         imageBase64 = await toBase64(image);
       } catch (err) {
         console.error(err);
+        setFileAlert(IMAGE_ERROR_MSG);
+        return;
       }
     }
 
-    onSave({ ...form, image: imageBase64 });
+    try {
+      await onSave({ ...form, image: imageBase64 });
+    } catch (err) {
+      console.error("Error al guardar desde el modal:", err);
+      setFileAlert(IMAGE_ERROR_MSG);
+    }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
-      <div className="glass w-full max-w-xl rounded-xl p-6 animate-pop">
-        <h2 className="text-xl font-bold mb-4">{producto ? "Editar Producto" : "Agregar Producto"}</h2>
+    <div className="overflow-y-scroll fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
+      {fileAlert && (
+        <div className="fixed top-10 left-1/2 -translate-x-1/2 z-[9999] bg-red-600 text-white px-4 py-2 rounded font-semibold animate-pop shadow-lg">
+          {fileAlert}
+        </div>
+      )}
 
-        <div className="border-2 border-dashed rounded-xl p-4 text-center cursor-pointer hover:bg-white/5 transition relative"
+      <div className="glass w-full max-w-xl rounded-xl p-6 animate-pop">
+        <h2 className="text-xl font-bold mb-4">
+          {producto ? "Editar Producto" : "Agregar Producto"}
+        </h2>
+
+        <div
+          className="border-2 border-dashed rounded-xl p-4 text-center cursor-pointer hover:bg-white/5 transition relative"
           onClick={() => fileInputRef.current?.click()}
           onDrop={handleDrop}
           onDragOver={(e) => e.preventDefault()}
         >
           {image && typeof image === "string" ? (
-            <img src={image} alt="Producto" className="mx-auto max-h-40 object-contain" />
+            <img
+              src={image}
+              alt="Producto"
+              className="mx-auto max-h-40 object-contain"
+            />
           ) : image instanceof File ? (
             <p className="font-medium text-indigo-400">{image.name}</p>
           ) : (
-            <p className="text-gray-300">Arrastra una imagen o haz click</p>
+            <p className="text-gray-300">
+              Arrastra una imagen o haz click para seleccionar
+            </p>
           )}
         </div>
 
-        <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={(e) => e.target.files && handleFile(e.target.files[0])} />
-
-        {error && <p className="text-red-400 mt-2 font-medium">{error}</p>}
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileInputRef}
+          className="hidden"
+          onChange={(e) => e.target.files && handleFile(e.target.files[0])}
+        />
 
         <div className="grid grid-cols-2 gap-3 mt-4">
           <div className="flex flex-col">
             <label className="text-gray-300 font-medium mb-1">Nombre</label>
-            <input className="glass border px-3 py-2 rounded" name="name" value={form.name} onChange={handleChange} autoComplete="off" />
+            <input
+              className="glass border px-3 py-2 rounded"
+              name="name"
+              value={form.name}
+              onChange={handleChange}
+              autoComplete="off"
+            />
           </div>
+
           <div className="flex flex-col">
             <label className="text-gray-300 font-medium mb-1">Precio</label>
-            <input className="glass border px-3 py-2 rounded" name="price" value={form.price} onChange={handleChange} autoComplete="off" />
+            <input
+              className="glass border px-3 py-2 rounded"
+              name="price"
+              value={form.price}
+              onChange={handleChange}
+              autoComplete="off"
+              inputMode="decimal"
+            />
           </div>
+
           <div className="flex flex-col">
             <label className="text-gray-300 font-medium mb-1">Stock</label>
-            <input className="glass border px-3 py-2 rounded" name="stock" value={form.stock} onChange={handleChange} autoComplete="off" />
+            <input
+              className="glass border px-3 py-2 rounded"
+              name="stock"
+              value={form.stock}
+              onChange={handleChange}
+              autoComplete="off"
+              inputMode="decimal"
+            />
           </div>
+
           <div className="flex flex-col">
             <label className="text-gray-300 font-medium mb-1">Proveedor</label>
-            <input className="glass border px-3 py-2 rounded" name="supplier" value={form.supplier} onChange={handleChange} autoComplete="off" />
+            <input
+              className="glass border px-3 py-2 rounded"
+              name="supplier"
+              value={form.supplier}
+              onChange={handleChange}
+              autoComplete="off"
+            />
           </div>
+
           <div className="flex flex-col">
-            <label className="text-gray-300 font-medium mb-1">Precio compra</label>
-            <input className="glass border px-3 py-2 rounded" name="price_buy" value={form.price_buy} onChange={handleChange} autoComplete="off" />
+            <label className="text-gray-300 font-medium mb-1">
+              Precio compra
+            </label>
+            <input
+              className="glass border px-3 py-2 rounded"
+              name="price_buy"
+              value={form.price_buy}
+              onChange={handleChange}
+              autoComplete="off"
+              inputMode="decimal"
+            />
           </div>
+
           <div className="flex flex-col">
-            <label className="text-gray-300 font-medium mb-1">Fecha de compra</label>
-            <input className="glass border px-3 py-2 rounded" type="date" name="purchaseDate" value={form.purchaseDate} onChange={handleChange} autoComplete="off" />
+            <label className="text-gray-300 font-medium mb-1">
+              Fecha de compra
+            </label>
+            <input
+              className="glass border px-3 py-2 rounded"
+              type="date"
+              name="purchaseDate"
+              value={form.purchaseDate}
+              onChange={handleChange}
+              autoComplete="off"
+            />
           </div>
+
           <div className="flex flex-col">
-            <label className="text-gray-300 font-medium mb-1">Fecha de caducidad</label>
-            <input className="glass border px-3 py-2 rounded" type="date" name="expirationDate" value={form.expirationDate} onChange={handleChange} autoComplete="off" />
+            <label className="text-gray-300 font-medium mb-1">
+              Fecha de caducidad
+            </label>
+            <input
+              className="glass border px-3 py-2 rounded"
+              type="date"
+              name="expirationDate"
+              value={form.expirationDate}
+              onChange={handleChange}
+              autoComplete="off"
+            />
           </div>
         </div>
 
         <div className="flex flex-col mt-3">
           <label className="text-gray-300 font-medium mb-1">Descripción</label>
-          <textarea className="glass border px-3 py-2 rounded w-full h-20" name="description" value={form.description} onChange={handleChange} autoComplete="off" />
+          <textarea
+            className="glass border px-3 py-2 rounded w-full h-20"
+            name="description"
+            value={form.description}
+            onChange={handleChange}
+            autoComplete="off"
+          />
         </div>
 
         <div className="mt-5 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded glass border btn-animate">Cancelar</button>
-          <button onClick={submit} className="px-4 py-2 rounded bg-indigo-600 text-white btn-animate" autoComplete="new-password" >Guardar</button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded glass border btn-animate"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={submit}
+            className="px-4 py-2 rounded bg-indigo-600 text-white btn-animate"
+            autoComplete="new-password"
+          >
+            Guardar
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-// --------------------------
-// Modal Detalle Producto
-// --------------------------
+// =====================================================================================
+// MODAL DETALLE
+// =====================================================================================
+
 function ModalDetalle({ producto, onClose }: any) {
+  const stockNumber = Number(producto.stock ?? 0);
+
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
       <div className="glass max-w-xl w-full p-6 rounded-xl animate-pop overflow-y-auto max-h-[90vh]">
         <h2 className="text-xl font-bold mb-4">{producto.name}</h2>
-        <img src={producto.image || "https://via.placeholder.com/600x400?text=Producto"} alt={producto.name} className="w-full max-h-60 object-contain mb-4 rounded" />
+        <img
+          src={
+            producto.image ||
+            "https://via.placeholder.com/600x400?text=Producto"
+          }
+          alt={producto.name}
+          className="w-full max-h-60 object-contain mb-4 rounded"
+        />
         <div className="grid grid-cols-2 gap-3">
-          <div><b>Precio:</b> ${producto.price}</div>
-          <div><b>Stock:</b> {producto.stock}</div>
-          <div><b>Proveedor:</b> {producto.provider}</div>
-          <div><b>Precio compra:</b> ${producto.price_buy}</div>
-          <div><b>Fecha compra:</b> {producto.date_buy?.split("T")[0]}</div>
-          <div><b>Fecha caducidad:</b> {producto.date_caducity?.split("T")[0]}</div>
+          <div>
+            <b>Precio:</b> ${producto.price}
+          </div>
+          <div className="flex items-center gap-2">
+            <b>Existencias:</b>
+            <span
+              className={`px-2 py-1 rounded-full font-semibold text-xs ${stockNumber > 0
+                ? "bg-green-600 text-white"
+                : "bg-red-600 text-white"
+                }`}
+            >
+              {stockNumber}
+            </span>
+          </div>
+          <div>
+            <b>Proveedor:</b> {producto.provider}
+          </div>
+          <div>
+            <b>Precio compra:</b> ${producto.price_buy}
+          </div>
+          <div>
+            <b>Fecha compra:</b> {producto.date_buy?.split("T")[0]}
+          </div>
+          <div>
+            <b>Fecha caducidad:</b> {producto.date_caducity?.split("T")[0]}
+          </div>
         </div>
-        <div className="mt-4"><b>Descripción:</b> {producto.description}</div>
+        <div className="mt-4">
+          <b>Descripción:</b> {producto.description}
+        </div>
         <div className="mt-5 flex justify-end">
-          <button onClick={onClose} className="px-4 py-2 rounded glass border btn-animate">Cerrar</button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded glass border btn-animate"
+          >
+            Cerrar
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-// --------------------------
-// Modal Eliminar
-// --------------------------
+// =====================================================================================
+// MODAL ELIMINAR k
+// =====================================================================================
+
 function ModalEliminar({ producto, onClose, onConfirm }: any) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
       <div className="glass max-w-sm w-full p-6 rounded-xl animate-pop">
         <h2 className="text-lg font-bold mb-4">Eliminar producto</h2>
-        <p>¿Deseas eliminar el producto <b>{producto?.name}</b>?</p>
+        <p>
+          ¿Deseas eliminar el producto <b>{producto?.name}</b>?
+        </p>
         <div className="mt-5 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded glass border btn-animate">Cancelar</button>
-          <button onClick={onConfirm} className="px-4 py-2 rounded bg-red-600 text-white btn-animate">Eliminar</button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded glass border btn-animate"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 rounded bg-red-600 text-white btn-animate"
+          >
+            Eliminar  
+          </button>
         </div>
       </div>
     </div>
