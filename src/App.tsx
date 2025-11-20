@@ -250,8 +250,8 @@ export default function App() {
       {alert && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 z-[9999] p-4 rounded-lg font-semibold animate-pop ${alert.type === "success"
-              ? "bg-green-500 text-white"
-              : "bg-red-500 text-white"
+            ? "bg-green-500 text-white"
+            : "bg-red-500 text-white"
             }`}
         >
           {alert.msg}
@@ -361,8 +361,8 @@ export default function App() {
                       <div className="mt-3 flex justify-between items-center text-sm">
                         <span
                           className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
-                              ? "bg-green-600 text-white"
-                              : "bg-red-600 text-white"
+                            ? "bg-green-600 text-white"
+                            : "bg-red-600 text-white"
                             }`}
                         >
                           Existencias: {stockNumber}
@@ -719,8 +719,8 @@ function ModalDetalle({ producto, onClose }: any) {
             <b>Existencias:</b>
             <span
               className={`px-2 py-1 rounded-full font-semibold text-xs ${stockNumber > 0
-                  ? "bg-green-600 text-white"
-                  : "bg-red-600 text-white"
+                ? "bg-green-600 text-white"
+                : "bg-red-600 text-white"
                 }`}
             >
               {stockNumber}
@@ -756,7 +756,7 @@ function ModalDetalle({ producto, onClose }: any) {
 }
 
 // =====================================================================================
-// MODAL ELIMINAR
+// MODAL ELIMINAR k
 // =====================================================================================
 
 function ModalEliminar({ producto, onClose, onConfirm }: any) {
@@ -778,7 +778,7 @@ function ModalEliminar({ producto, onClose, onConfirm }: any) {
             onClick={onConfirm}
             className="px-4 py-2 rounded bg-red-600 text-white btn-animate"
           >
-            Eliminar
+            Eliminar  
           </button>
         </div>
       </div>
