@@ -242,7 +242,7 @@ export default function App() {
         return;
       }
 
-      const payload: Product = {
+      const base: any = {
         ...data,
         price: priceNumber,
         stock: stockNumber,
@@ -250,8 +250,14 @@ export default function App() {
         date_buy: data.purchaseDate,
         date_caducity: data.expirationDate,
         provider: data.supplier,
-        image: data.image || "",
       };
+
+      // Solo incluimos image si viene definida desde el modal
+      if (data.image !== undefined) {
+        base.image = data.image;
+      }
+
+      const payload: Product = base;
 
       if (editingProduct) {
         await updateProduct(editingProduct._id!, payload);
@@ -299,7 +305,10 @@ export default function App() {
       setShowProductModal(false);
     } catch (err) {
       console.error("Error al guardar producto:", err);
-      mostrarAlerta("error", IMAGE_ERROR_MSG);
+      mostrarAlerta(
+        "error",
+        "Error al guardar el producto. Revisa los datos o intenta nuevamente."
+      );
     }
   };
 
@@ -462,6 +471,19 @@ export default function App() {
 
   const abrirEliminarUsuario = (user: User) => {
     if (!canManageUsers) return;
+
+    // 🚫 No permitir eliminar al usuario actualmente logueado
+    if (
+      currentUser &&
+      (currentUser._id === user._id || currentUser.email === user.email)
+    ) {
+      mostrarAlerta(
+        "error",
+        "No puedes eliminar el usuario con el que estás actualmente logueado."
+      );
+      return;
+    }
+
     setDeletingUser(user);
   };
 
@@ -491,6 +513,7 @@ export default function App() {
 
   const confirmarEliminarUsuario = async () => {
     if (!deletingUser || !canManageUsers) return;
+
     try {
       await deleteUserById(deletingUser._id!);
       setUsers((prev) => prev.filter((u) => u._id !== deletingUser._id));
@@ -1142,22 +1165,35 @@ function ModalProducto({ producto, onClose, onSave }: any) {
       return;
     }
 
-    let imageBase64 = typeof image === "string" ? image : "";
+    const isEditing = !!producto;
+
+    let payloadForSave: any = { ...form };
+
+    // Si el usuario eligió un nuevo archivo, lo convertimos
     if (image instanceof File) {
       try {
-        imageBase64 = await toBase64(image);
+        const imageBase64 = await toBase64(image);
+        payloadForSave.image = imageBase64;
       } catch (err) {
         console.error(err);
         setFileAlert(IMAGE_ERROR_MSG);
         return;
       }
+    } else if (!isEditing) {
+      // Creación: si no hay imagen, mandamos cadena vacía o la que haya
+      if (typeof image === "string" && image.length > 0) {
+        payloadForSave.image = image;
+      } else {
+        payloadForSave.image = "";
+      }
     }
+    // Edición SIN cambiar imagen: no añadimos image, el backend conserva la actual
 
     try {
-      await onSave({ ...form, image: imageBase64 });
+      await onSave(payloadForSave);
     } catch (err) {
       console.error("Error al guardar desde el modal:", err);
-      setFileAlert(IMAGE_ERROR_MSG);
+      setFileAlert("Ocurrió un error al guardar el producto.");
     }
   };
 
@@ -1434,6 +1470,7 @@ function ModalUsuarioEditar({
   onSave: (payload: {
     name: string;
     email: string;
+    password?: string; // 👈 se queda en el payload aunque no se muestre el campo
     role: "admin" | "moderator" | "user";
   }) => void;
 }) {
@@ -1450,19 +1487,28 @@ function ModalUsuarioEditar({
   const [form, setForm] = useState({
     name: user.name || "",
     email: user.email || "",
+    password: "", // 👈 se mantiene por si luego reactivas el input
   });
-  const [role, setRole] = useState<"admin" | "moderator" | "user">(
-    getInitialRole()
-  );
+
+  const [role, setRole] = useState<"admin" | "moderator" | "user">(getInitialRole());
   const [error, setError] = useState("");
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+
     if (!form.name.trim() || !form.email.trim()) {
       setError("Nombre y correo son obligatorios");
       return;
     }
-    onSave({ name: form.name, email: form.email, role });
+
+    const pass = form.password.trim();
+
+    onSave({
+      name: form.name.trim(),
+      email: form.email.trim(),
+      password: pass.length > 0 ? pass : undefined, // 👈 listo para usarse si luego reactivas el campo
+      role,
+    });
   };
 
   return (
@@ -1509,17 +1555,39 @@ function ModalUsuarioEditar({
             />
           </div>
 
+          {/*
+          // ✅ CAMPO CONTRASEÑA (oculto por ahora)
+          // Si luego lo quieres mostrar, solo quita este comentario.
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">
+              Nueva contraseña{" "}
+              <span className="text-[0.7rem] text-gray-400">(opcional)</span>
+            </label>
+            <input
+              type="password"
+              className="glass border px-3 py-2 rounded bg-black/40 text-gray-100"
+              value={form.password}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, password: e.target.value }))
+              }
+              placeholder="Dejar vacío para no cambiar"
+              autoComplete="new-password"
+            />
+          </div>
+          */}
+
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">Rol</label>
             <select
               className="
-    glass border px-3 py-2 rounded 
-    bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
-    text-gray-100 text-sm
-    focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
-    hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
-    cursor-pointer
-  "
+                glass border px-3 py-2 rounded 
+                bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
+                text-gray-100 text-sm
+                focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
+                hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
+                cursor-pointer
+              "
               value={role}
               onChange={(e) =>
                 setRole(e.target.value as "admin" | "moderator" | "user")
@@ -1535,7 +1603,6 @@ function ModalUsuarioEditar({
                 💰 Cajero
               </option>
             </select>
-
           </div>
 
           <div className="mt-4 flex justify-end gap-3">
@@ -1558,6 +1625,7 @@ function ModalUsuarioEditar({
     </div>
   );
 }
+
 
 // =====================================================================================
 // MODAL ELIMINAR USUARIO
