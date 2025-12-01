@@ -1,4 +1,11 @@
-import { useEffect, useState, useRef } from "react";
+// src/App.tsx
+import {
+  useEffect,
+  useState,
+  useRef,
+  type FormEvent,
+} from "react";
+
 import {
   getProducts,
   getProductId,
@@ -6,12 +13,49 @@ import {
   updateProduct,
   deleteProduct,
 } from "./services/productService";
-import type { Product } from "./services/api";
+import type { Product, User } from "./services/api";
+import {
+  loginUser,
+  logoutUser,
+  getUsers,
+  updateUserById,
+  deleteUserById,
+} from "./services/usersService";
+import { createApiForResource } from "./services/api";
 
 const IMAGE_ERROR_MSG =
   "por favor seleccione una imagen con el formato válido no mayor a 5mb";
 
+type View = "products" | "users" | "addUser";
+
+// Helper para extraer nombres de roles
+const getRoleNames = (user: User | null | undefined): string[] => {
+  if (!user || !user.roles) return [];
+  return user.roles.map((r) =>
+    typeof r === "string" ? r : r.name
+  );
+};
+
 export default function App() {
+  // =========================
+  // Estados de AUTENTICACIÓN
+  // =========================
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // =========================
+  // Estados de VISTAS
+  // =========================
+  const [activeView, setActiveView] = useState<View>("products");
+
+  // =========================
+  // Estados de PRODUCTOS
+  // =========================
   const [products, setProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [id, setId] = useState("");
@@ -29,15 +73,61 @@ export default function App() {
   } | null>(null);
 
   // Overrides locales para que los cambios (como stock = 0) se respeten
-  // aunque el backend ignore el 0.
   const [localOverrides, setLocalOverrides] = useState<Record<string, Product>>(
     {}
   );
 
+  // =========================
+  // Estados de USUARIOS (vista admin/gerente)
+  // =========================
+  const [users, setUsers] = useState<User[]>([]);
+  const [newUserForm, setNewUserForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+  });
+  const [newUserLoading, setNewUserLoading] = useState(false);
+
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [deletingUser, setDeletingUser] = useState<User | null>(null);
+
+  // =========================
+  // Derivados de ROLES
+  // =========================
+  const roleNames = getRoleNames(currentUser);
+  const isAdmin = roleNames.includes("admin");
+  const isManager = roleNames.includes("moderator");
+  const isCashier = roleNames.includes("user");
+
+  const canManageProducts = isAdmin || isManager; // Admin + Gerente
+  const canManageUsers = isAdmin || isManager; // Admin + Gerente
+
+  let roleLabel = "Usuario";
+  if (isAdmin) roleLabel = "Administrador Principal";
+  else if (isManager) roleLabel = "Gerente";
+  else if (isCashier) roleLabel = "Cajero";
+
+  const viewTitle =
+    activeView === "products"
+      ? "Productos"
+      : activeView === "users"
+        ? "Usuarios"
+        : "Agregar usuario";
+
+  // =========================
+  // EFECTOS
+  // =========================
+
   useEffect(() => {
-    verTodos();
+    if (!currentUser) return;
+
+    if (activeView === "products") {
+      verTodos();
+    } else if (activeView === "users" && canManageUsers) {
+      loadUsers();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [currentUser, activeView]);
 
   const aplicarOverrides = (lista: Product[]): Product[] =>
     lista.map((p) =>
@@ -55,7 +145,28 @@ export default function App() {
     }
   };
 
+  const loadUsers = async () => {
+    try {
+      const data = await getUsers();
+      setUsers(data);
+
+      if (Array.isArray(data) && data.length > 0) {
+        mostrarAlerta(
+          "success",
+          `Se cargaron ${data.length} usuario(s) correctamente ✅`
+        );
+      } else {
+        mostrarAlerta("error", "No hay usuarios registrados");
+      }
+    } catch (err) {
+      console.error("Error al cargar usuarios:", err);
+      mostrarAlerta("error", "No se pudieron cargar los usuarios ❌");
+    }
+  };
+
   const buscarPorId = async () => {
+    if (activeView !== "products") return;
+
     const term = id.trim();
     if (!term) {
       return verTodos();
@@ -87,16 +198,19 @@ export default function App() {
   };
 
   const abrirAgregar = () => {
+    if (!canManageProducts) return;
     setEditingProduct(null);
     setShowProductModal(true);
   };
 
   const abrirEditar = (p: Product) => {
+    if (!canManageProducts) return;
     setEditingProduct(p);
     setShowProductModal(true);
   };
 
   const abrirEliminar = (p: Product) => {
+    if (!canManageProducts) return;
     setDeleteTarget(p);
     setShowDeleteModal(true);
   };
@@ -111,6 +225,8 @@ export default function App() {
   };
 
   const guardarProducto = async (data: any) => {
+    if (!canManageProducts) return;
+
     try {
       const priceNumber = Number(data.price);
       const stockNumber = Number(data.stock);
@@ -138,7 +254,6 @@ export default function App() {
       };
 
       if (editingProduct) {
-        // Persistimos en backend, pero el estado lo controlamos nosotros
         await updateProduct(editingProduct._id!, payload);
 
         const updatedProduct: Product = {
@@ -189,6 +304,8 @@ export default function App() {
   };
 
   const confirmarEliminar = async () => {
+    if (!canManageProducts) return;
+
     try {
       if (deleteTarget) {
         await deleteProduct(deleteTarget._id!);
@@ -222,6 +339,173 @@ export default function App() {
   const handleMenuEnter = () => setMenuOpen(true);
   const handleMenuLeave = () => setMenuOpen(false);
 
+  // =========================
+  // HANDLERS DE AUTH
+  // =========================
+
+  const handleAuthSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+
+    if (!authEmail || !authPassword || (authMode === "register" && !authName)) {
+      setAuthError("Todos los campos son obligatorios");
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      if (authMode === "login") {
+        const { user } = await loginUser({
+          email: authEmail,
+          password: authPassword,
+        });
+        setCurrentUser(user);
+        mostrarAlerta("success", "Inicio de sesión exitoso ✅");
+      } else {
+        const apiAuth = createApiForResource("auth");
+        const res = await apiAuth.post("/register", {
+          name: authName,
+          email: authEmail,
+          password: authPassword,
+        });
+        const { data } = res.data;
+        setCurrentUser(data as User);
+        mostrarAlerta("success", "Usuario registrado y logueado ✅");
+      }
+
+      setAuthPassword("");
+    } catch (err) {
+      console.error("Error en autenticación:", err);
+      setAuthError("Credenciales inválidas o error en el servidor");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    logoutUser();
+    setCurrentUser(null);
+    setProducts([]);
+    setAllProducts([]);
+    setLocalOverrides({});
+    setDetailProduct(null);
+    setShowProductModal(false);
+    setShowDeleteModal(false);
+    setActiveView("products");
+    mostrarAlerta("success", "Sesión cerrada correctamente ✅");
+  };
+
+  // =========================
+  // HANDLERS DE VISTAS
+  // =========================
+
+  const goToProducts = () => {
+    setActiveView("products");
+    setMenuOpen(false);
+  };
+
+  const goToUsers = () => {
+    if (!canManageUsers) return;
+    setActiveView("users");
+    setMenuOpen(false);
+  };
+
+  const goToAddUser = () => {
+    if (!canManageUsers) return;
+    setNewUserForm({ name: "", email: "", password: "" });
+    setActiveView("addUser");
+    setMenuOpen(false);
+  };
+
+  const handleNewUserSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!canManageUsers) return;
+
+    if (
+      !newUserForm.name.trim() ||
+      !newUserForm.email.trim() ||
+      !newUserForm.password.trim()
+    ) {
+      mostrarAlerta("error", "Todos los campos son obligatorios");
+      return;
+    }
+
+    setNewUserLoading(true);
+    try {
+      const apiAuth = createApiForResource("auth");
+      await apiAuth.post("/register", {
+        name: newUserForm.name,
+        email: newUserForm.email,
+        password: newUserForm.password,
+      });
+
+      mostrarAlerta("success", "Usuario creado correctamente ✅");
+      setNewUserForm({ name: "", email: "", password: "" });
+      setActiveView("users");
+      await loadUsers();
+    } catch (err) {
+      console.error("Error al crear usuario:", err);
+      mostrarAlerta("error", "No se pudo crear el usuario ❌");
+    } finally {
+      setNewUserLoading(false);
+    }
+  };
+
+  // =========================
+  // CRUD USUARIOS (incluye rol)
+  // =========================
+
+  const abrirEditarUsuario = (user: User) => {
+    if (!canManageUsers) return;
+    setEditingUser(user);
+  };
+
+  const abrirEliminarUsuario = (user: User) => {
+    if (!canManageUsers) return;
+    setDeletingUser(user);
+  };
+
+  const guardarUsuarioEditado = async (payload: {
+    name: string;
+    email: string;
+    role: "admin" | "moderator" | "user";
+  }) => {
+    if (!editingUser || !canManageUsers) return;
+    try {
+      const updated = await updateUserById(editingUser._id!, {
+        name: payload.name,
+        email: payload.email,
+        roles: [payload.role], // se envía el rol por nombre
+      });
+
+      setUsers((prev) =>
+        prev.map((u) => (u._id === updated._id ? updated : u))
+      );
+      mostrarAlerta("success", "Usuario actualizado correctamente ✅");
+      setEditingUser(null);
+    } catch (err) {
+      console.error("Error al actualizar usuario:", err);
+      mostrarAlerta("error", "No se pudo actualizar el usuario ❌");
+    }
+  };
+
+  const confirmarEliminarUsuario = async () => {
+    if (!deletingUser || !canManageUsers) return;
+    try {
+      await deleteUserById(deletingUser._id!);
+      setUsers((prev) => prev.filter((u) => u._id !== deletingUser._id));
+      mostrarAlerta("success", "Usuario eliminado correctamente ✅");
+      setDeletingUser(null);
+    } catch (err) {
+      console.error("Error al eliminar usuario:", err);
+      mostrarAlerta("error", "No se pudo eliminar el usuario ❌");
+    }
+  };
+
+  // =========================
+  // RENDER
+  // =========================
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-gray-100 overflow-x-hidden">
       <style>{`
@@ -250,168 +534,516 @@ export default function App() {
       {alert && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 z-[9999] p-4 rounded-lg font-semibold animate-pop ${alert.type === "success"
-            ? "bg-green-500 text-white"
-            : "bg-red-500 text-white"
+              ? "bg-green-500 text-white"
+              : "bg-red-500 text-white"
             }`}
         >
           {alert.msg}
         </div>
       )}
 
-      <div
-        className="fixed top-0 left-0 h-full w-2 z-30"
-        onMouseEnter={handleMenuEnter}
-      />
+      {!currentUser ? (
+        <div className="min-h-screen flex items-center justify-center px-4">
+          <div className="glass w-full max-w-md rounded-xl p-8 animate-pop">
+            <h1 className="text-2xl font-bold mb-2 text-center">
+              {authMode === "login"
+                ? "Iniciar sesión"
+                : "Crear cuenta"}
+            </h1>
+            <p className="text-center mb-6 text-gray-300 text-sm">
+              Conéctate para gestionar tus productos
+            </p>
 
-      <aside
-        className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? "drawer-open" : "drawer-closed"
-          }`}
-        onMouseEnter={handleMenuEnter}
-        onMouseLeave={handleMenuLeave}
-      >
-        <h2 className="text-2xl font-bold mb-6">Menú</h2>
-        <ul className="flex flex-col gap-4">
-          <li>
-            <button
-              onClick={verTodos}
-              className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400"
-            >
-              Ver todos
-            </button>
-          </li>
-          <li>
-            <button
-              onClick={abrirAgregar}
-              className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
-            >
-              ➕ Agregar producto
-            </button>
-          </li>
-        </ul>
-      </aside>
+            {authError && (
+              <div className="mb-4 bg-red-600 text-white px-3 py-2 rounded text-sm">
+                {authError}
+              </div>
+            )}
 
-      {menuOpen && (
-        <div
-          onClick={() => setMenuOpen(false)}
-          className="fixed inset-0 bg-black/50 z-30"
-        ></div>
-      )}
+            <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {authMode === "register" && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm text-gray-200">Nombre</label>
+                  <input
+                    className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                    value={authName}
+                    onChange={(e) => setAuthName(e.target.value)}
+                    autoComplete="name"
+                  />
+                </div>
+              )}
 
-      <main
-        className={`transition-all duration-300 ${menuOpen ? "ml-64" : ""}`}
-      >
-        <header className="glass border-b fixed w-full top-0 left-0 z-20">
-          <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold">Productos</h1>
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={id}
-                onChange={(e) => setId(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && buscarPorId()}
-                placeholder="Buscar por ID…"
-                className="h-10 w-64 max-w-full px-3 rounded glass border text-gray-200 placeholder-gray-400"
-              />
+              <div className="flex flex-col gap-1">
+                <label className="text-sm text-gray-200">Correo</label>
+                <input
+                  type="email"
+                  className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-sm text-gray-200">Contraseña</label>
+                <input
+                  type="password"
+                  className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  autoComplete={
+                    authMode === "login"
+                      ? "current-password"
+                      : "new-password"
+                  }
+                />
+              </div>
+
               <button
-                onClick={buscarPorId}
-                className="h-10 px-4 rounded bg-indigo-600 text-white btn-animate"
+                type="submit"
+                disabled={authLoading}
+                className="w-full mt-2 py-2 rounded bg-indigo-600 text-white font-semibold btn-animate disabled:opacity-60"
               >
-                Buscar
+                {authLoading
+                  ? "Procesando..."
+                  : authMode === "login"
+                    ? "Entrar"
+                    : "Registrarse"}
               </button>
+            </form>
+
+            <div className="mt-4 text-center text-sm text-gray-300">
+              {authMode === "login" ? (
+                <>
+                  ¿No tienes cuenta?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("register");
+                      setAuthError("");
+                    }}
+                    className="text-indigo-400 hover:underline"
+                  >
+                    Regístrate aquí
+                  </button>
+                </>
+              ) : (
+                <>
+                  ¿Ya tienes cuenta?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("login");
+                      setAuthError("");
+                    }}
+                    className="text-indigo-400 hover:underline"
+                  >
+                    Inicia sesión
+                  </button>
+                </>
+              )}
             </div>
           </div>
-        </header>
+        </div>
+      ) : (
+        <>
+          <div
+            className="fixed top-0 left-0 h-full w-2 z-30"
+            onMouseEnter={handleMenuEnter}
+          />
 
-        <div className="h-20"></div>
-
-        <section className="max-w-6xl mx-auto px-4 py-6">
-          {products.length === 0 ? (
-            <div className="glass border p-8 text-center">Sin resultados.</div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {products.map((p) => {
-                const stockNumber = Number(p.stock ?? 0);
-
-                return (
-                  <article
-                    key={p._id}
-                    className="glass border rounded-xl overflow-hidden shadow-lg card-hover group"
-                  >
-                    <img
-                      src={
-                        p.image ||
-                        "https://via.placeholder.com/600x400?text=Producto"
-                      }
-                      alt={p.name}
-                      className="w-full h-40 object-cover"
-                      onClick={() => abrirDetalle(p)}
-                    />
-                    <div className="p-4">
-                      <div className="flex items-start justify-between">
-                        <h3 className="font-semibold">{p.name}</h3>
-                        <span className="text-indigo-400 font-medium">
-                          ${p.price}
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-300 mt-1 line-clamp-2">
-                        {p.description}
-                      </p>
-
-                      <div className="mt-3 flex justify-between items-center text-sm">
-                        <span
-                          className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
-                            ? "bg-green-600 text-white"
-                            : "bg-red-600 text-white"
-                            }`}
-                        >
-                          Existencias: {stockNumber}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="card-buttons">
+          <aside
+            className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? "drawer-open" : "drawer-closed"
+              }`}
+            onMouseEnter={handleMenuEnter}
+            onMouseLeave={handleMenuLeave}
+          >
+            <h2 className="text-2xl font-bold mb-6">Menú</h2>
+            <ul className="flex flex-col gap-4 text-sm">
+              {activeView === "products" && (
+                <>
+                  <li>
+                    <button
+                      onClick={verTodos}
+                      className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400"
+                    >
+                      📦 Ver todos los productos
+                    </button>
+                  </li>
+                  {canManageProducts && (
+                    <li>
                       <button
-                        onClick={() => abrirEditar(p)}
-                        className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate"
-                        autoComplete="off"
+                        onClick={abrirAgregar}
+                        className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
                       >
-                        Editar
+                        ➕ Agregar producto
                       </button>
+                    </li>
+                  )}
+                  {canManageUsers && (
+                    <li>
                       <button
-                        onClick={() => abrirEliminar(p)}
-                        className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate"
+                        onClick={goToUsers}
+                        className="btn-animate w-full text-left text-gray-100 hover:text-cyan-400"
                       >
-                        Eliminar
+                        👥 Usuarios
                       </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+                    </li>
+                  )}
+                </>
+              )}
+
+              {activeView !== "products" && canManageUsers && (
+                <>
+                  <li>
+                    <button
+                      onClick={goToProducts}
+                      className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400"
+                    >
+                      📦 Productos
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      onClick={goToAddUser}
+                      className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
+                    >
+                      ➕ Agregar usuario
+                    </button>
+                  </li>
+                </>
+              )}
+            </ul>
+          </aside>
+
+          {menuOpen && (
+            <div
+              onClick={() => setMenuOpen(false)}
+              className="fixed inset-0 bg-black/50 z-30"
+            ></div>
           )}
-        </section>
-      </main>
 
-      {showProductModal && (
-        <ModalProducto
-          producto={editingProduct}
-          onClose={() => setShowProductModal(false)}
-          onSave={guardarProducto}
-        />
-      )}
-      {showDeleteModal && (
-        <ModalEliminar
-          producto={deleteTarget}
-          onClose={() => setShowDeleteModal(false)}
-          onConfirm={confirmarEliminar}
-        />
-      )}
-      {detailProduct && (
-        <ModalDetalle
-          producto={detailProduct}
-          onClose={() => setDetailProduct(null)}
-        />
+          <main
+            className={`transition-all duration-300 ${menuOpen ? "ml-64" : ""
+              }`}
+          >
+            <header className="glass border-b fixed w-full top-0 left-0 z-20">
+              <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-6">
+                <div className="flex flex-col">
+                  <span className="text-xs uppercase tracking-wide text-gray-400">
+                    Panel de control
+                  </span>
+                  <h1 className="text-xl font-bold">{viewTitle}</h1>
+                </div>
+                <div className="flex items-center gap-6">
+                  {activeView === "products" && (
+                    <div className="flex gap-2">
+                      <input
+                        value={id}
+                        onChange={(e) => setId(e.target.value)}
+                        onKeyDown={(e) =>
+                          e.key === "Enter" && buscarPorId()
+                        }
+                        placeholder="Buscar producto…"
+                        className="h-9 w-56 max-w-full px-3 rounded glass border text-gray-200 placeholder-gray-400 text-sm"
+                      />
+                      <button
+                        onClick={buscarPorId}
+                        className="h-9 px-4 rounded bg-indigo-600 text-white btn-animate text-sm"
+                      >
+                        Buscar
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3">
+                    <div className="text-right text-xs">
+                      <div className="font-semibold text-sm">
+                        {currentUser.name || currentUser.email}
+                      </div>
+                      <div className="flex items-center gap-2 justify-end mt-1">
+                        <span className="px-2 py-0.5 rounded-full bg-gray-800/80 border border-gray-700 text-[0.7rem] uppercase tracking-wide text-gray-200">
+                          {roleLabel}
+                        </span>
+                        <button
+                          onClick={handleLogout}
+                          className="text-[0.7rem] text-red-300 hover:text-red-100 underline-offset-2 hover:underline"
+                        >
+                          Cerrar sesión
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <div className="h-20"></div>
+
+            {activeView === "products" && (
+              <section className="max-w-6xl mx-auto px-4 py-6">
+                {products.length === 0 ? (
+                  <div className="glass border p-8 text-center">
+                    Sin resultados.
+                  </div>
+                ) : (
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {products.map((p) => {
+                      const stockNumber = Number(p.stock ?? 0);
+
+                      return (
+                        <article
+                          key={p._id}
+                          className="glass border rounded-xl overflow-hidden shadow-lg card-hover group"
+                        >
+                          <img
+                            src={
+                              p.image ||
+                              "https://via.placeholder.com/600x400?text=Producto"
+                            }
+                            alt={p.name}
+                            className="w-full h-40 object-cover"
+                            onClick={() => abrirDetalle(p)}
+                          />
+                          <div className="p-4">
+                            <div className="flex items-start justify-between">
+                              <h3 className="font-semibold">{p.name}</h3>
+                              <span className="text-indigo-400 font-medium">
+                                ${p.price}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-300 mt-1 line-clamp-2">
+                              {p.description}
+                            </p>
+
+                            <div className="mt-3 flex justify-between items-center text-sm">
+                              <span
+                                className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
+                                    ? "bg-green-600 text-white"
+                                    : "bg-red-600 text-white"
+                                  }`}
+                              >
+                                Existencias: {stockNumber}
+                              </span>
+                            </div>
+                          </div>
+
+                          {canManageProducts && (
+                            <div className="card-buttons">
+                              <button
+                                onClick={() => abrirEditar(p)}
+                                className="px-2 py-1 rounded bg-green-600 text-white text-sm btn-animate"
+                                autoComplete="off"
+                              >
+                                Editar
+                              </button>
+                              <button
+                                onClick={() => abrirEliminar(p)}
+                                className="px-2 py-1 rounded bg-red-600 text-white text-sm btn-animate"
+                              >
+                                Eliminar
+                              </button>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {activeView === "users" && canManageUsers && (
+              <section className="max-w-5xl mx-auto px-4 py-6">
+                <div className="glass border rounded-xl p-6">
+                  <h2 className="text-xl font-bold mb-4">
+                    Usuarios registrados
+                  </h2>
+                  {users.length === 0 ? (
+                    <p className="text-sm text-gray-300">
+                      No hay usuarios registrados.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="text-left text-gray-300 border-b border-gray-700">
+                          <tr>
+                            <th className="py-2 pr-4">ID</th>
+                            <th className="py-2 pr-4">Nombre</th>
+                            <th className="py-2 pr-4">Correo</th>
+                            <th className="py-2 pr-4">Roles</th>
+                            <th className="py-2 pr-4 text-right">
+                              Acciones
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {users.map((u) => {
+                            const rNames = getRoleNames(u);
+                            const rolesText =
+                              rNames.length > 0
+                                ? rNames.join(", ")
+                                : "sin rol";
+                            return (
+                              <tr
+                                key={u._id || u.email}
+                                className="border-b border-gray-800 last:border-b-0"
+                              >
+                                <td className="py-2 pr-4 text-gray-400 max-w-[140px] truncate">
+                                  {u._id}
+                                </td>
+                                <td className="py-2 pr-4">
+                                  {u.name || "-"}
+                                </td>
+                                <td className="py-2 pr-4">
+                                  {u.email || "-"}
+                                </td>
+                                <td className="py-2 pr-4 text-gray-300">
+                                  {rolesText}
+                                </td>
+                                <td className="py-2 pr-0 text-right">
+                                  <button
+                                    onClick={() => abrirEditarUsuario(u)}
+                                    className="px-3 py-1 rounded bg-green-600 text-white text-xs mr-2 btn-animate"
+                                  >
+                                    Editar
+                                  </button>
+                                  <button
+                                    onClick={() => abrirEliminarUsuario(u)}
+                                    className="px-3 py-1 rounded bg-red-600 text-white text-xs btn-animate"
+                                  >
+                                    Eliminar
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {activeView === "addUser" && canManageUsers && (
+              <section className="max-w-md mx-auto px-4 py-6">
+                <div className="glass border rounded-xl p-6">
+                  <h2 className="text-xl font-bold mb-2">
+                    Agregar usuario
+                  </h2>
+                  <p className="text-sm text-gray-300 mb-4">
+                    Crea un nuevo usuario con nombre, correo y
+                    contraseña.
+                  </p>
+
+                  <form
+                    onSubmit={handleNewUserSubmit}
+                    className="space-y-4"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm text-gray-200">
+                        Nombre
+                      </label>
+                      <input
+                        className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                        value={newUserForm.name}
+                        onChange={(e) =>
+                          setNewUserForm((prev) => ({
+                            ...prev,
+                            name: e.target.value,
+                          }))
+                        }
+                        autoComplete="name"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm text-gray-200">
+                        Correo
+                      </label>
+                      <input
+                        type="email"
+                        className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                        value={newUserForm.email}
+                        onChange={(e) =>
+                          setNewUserForm((prev) => ({
+                            ...prev,
+                            email: e.target.value,
+                          }))
+                        }
+                        autoComplete="email"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm text-gray-200">
+                        Contraseña
+                      </label>
+                      <input
+                        type="password"
+                        className="glass border px-3 py-2 rounded text-gray-100 bg-black/40"
+                        value={newUserForm.password}
+                        onChange={(e) =>
+                          setNewUserForm((prev) => ({
+                            ...prev,
+                            password: e.target.value,
+                          }))
+                        }
+                        autoComplete="new-password"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={newUserLoading}
+                      className="w-full mt-2 py-2 rounded bg-indigo-600 text-white font-semibold btn-animate disabled:opacity-60 text-sm"
+                    >
+                      {newUserLoading
+                        ? "Guardando..."
+                        : "Guardar usuario"}
+                    </button>
+                  </form>
+                </div>
+              </section>
+            )}
+          </main>
+
+          {showProductModal && (
+            <ModalProducto
+              producto={editingProduct}
+              onClose={() => setShowProductModal(false)}
+              onSave={guardarProducto}
+            />
+          )}
+          {showDeleteModal && (
+            <ModalEliminar
+              producto={deleteTarget}
+              onClose={() => setShowDeleteModal(false)}
+              onConfirm={confirmarEliminar}
+            />
+          )}
+          {detailProduct && (
+            <ModalDetalle
+              producto={detailProduct}
+              onClose={() => setDetailProduct(null)}
+            />
+          )}
+
+          {editingUser && (
+            <ModalUsuarioEditar
+              user={editingUser}
+              onClose={() => setEditingUser(null)}
+              onSave={guardarUsuarioEditado}
+            />
+          )}
+          {deletingUser && (
+            <ModalUsuarioEliminar
+              user={deletingUser}
+              onClose={() => setDeletingUser(null)}
+              onConfirm={confirmarEliminarUsuario}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -662,7 +1294,9 @@ function ModalProducto({ producto, onClose, onSave }: any) {
         </div>
 
         <div className="flex flex-col mt-3">
-          <label className="text-gray-300 font-medium mb-1">Descripción</label>
+          <label className="text-gray-300 font-medium mb-1">
+            Descripción
+          </label>
           <textarea
             className="glass border px-3 py-2 rounded w-full h-20"
             name="description"
@@ -693,7 +1327,7 @@ function ModalProducto({ producto, onClose, onSave }: any) {
 }
 
 // =====================================================================================
-// MODAL DETALLE
+// MODAL DETALLE PRODUCTO
 // =====================================================================================
 
 function ModalDetalle({ producto, onClose }: any) {
@@ -719,8 +1353,8 @@ function ModalDetalle({ producto, onClose }: any) {
             <b>Existencias:</b>
             <span
               className={`px-2 py-1 rounded-full font-semibold text-xs ${stockNumber > 0
-                ? "bg-green-600 text-white"
-                : "bg-red-600 text-white"
+                  ? "bg-green-600 text-white"
+                  : "bg-red-600 text-white"
                 }`}
             >
               {stockNumber}
@@ -756,7 +1390,7 @@ function ModalDetalle({ producto, onClose }: any) {
 }
 
 // =====================================================================================
-// MODAL ELIMINAR k
+// MODAL ELIMINAR PRODUCTO
 // =====================================================================================
 
 function ModalEliminar({ producto, onClose, onConfirm }: any) {
@@ -778,7 +1412,187 @@ function ModalEliminar({ producto, onClose, onConfirm }: any) {
             onClick={onConfirm}
             className="px-4 py-2 rounded bg-red-600 text-white btn-animate"
           >
-            Eliminar  
+            Eliminar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================================
+// MODAL EDITAR USUARIO (con selección de rol)
+// =====================================================================================
+
+function ModalUsuarioEditar({
+  user,
+  onClose,
+  onSave,
+}: {
+  user: User;
+  onClose: () => void;
+  onSave: (payload: {
+    name: string;
+    email: string;
+    role: "admin" | "moderator" | "user";
+  }) => void;
+}) {
+  const getInitialRole = (): "admin" | "moderator" | "user" => {
+    const rawRoles = user.roles ?? [];
+    const names = rawRoles.map((r: any) =>
+      typeof r === "string" ? r : r.name
+    );
+    if (names.includes("admin")) return "admin";
+    if (names.includes("moderator")) return "moderator";
+    return "user";
+  };
+
+  const [form, setForm] = useState({
+    name: user.name || "",
+    email: user.email || "",
+  });
+  const [role, setRole] = useState<"admin" | "moderator" | "user">(
+    getInitialRole()
+  );
+  const [error, setError] = useState("");
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim() || !form.email.trim()) {
+      setError("Nombre y correo son obligatorios");
+      return;
+    }
+    onSave({ name: form.name, email: form.email, role });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
+      <div className="glass max-w-sm w-full p-6 rounded-xl animate-pop">
+        <h2 className="text-lg font-bold mb-4">Editar usuario</h2>
+
+        {error && (
+          <div className="mb-3 bg-red-600 text-white px-3 py-2 rounded text-xs">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-3 text-sm">
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">ID</label>
+            <input
+              value={user._id}
+              disabled
+              className="glass border px-3 py-2 rounded text-gray-400 bg-black/40 text-xs"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">Nombre</label>
+            <input
+              className="glass border px-3 py-2 rounded bg-black/40 text-gray-100"
+              value={form.name}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, name: e.target.value }))
+              }
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">Correo</label>
+            <input
+              type="email"
+              className="glass border px-3 py-2 rounded bg-black/40 text-gray-100"
+              value={form.email}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, email: e.target.value }))
+              }
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">Rol</label>
+            <select
+              className="
+    glass border px-3 py-2 rounded 
+    bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
+    text-gray-100 text-sm
+    focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
+    hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
+    cursor-pointer
+  "
+              value={role}
+              onChange={(e) =>
+                setRole(e.target.value as "admin" | "moderator" | "user")
+              }
+            >
+              <option className="bg-slate-900 text-gray-100" value="admin">
+                🛡️ Administrador principal
+              </option>
+              <option className="bg-slate-900 text-gray-100" value="moderator">
+                📋 Gerente
+              </option>
+              <option className="bg-slate-900 text-gray-100" value="user">
+                💰 Cajero
+              </option>
+            </select>
+
+          </div>
+
+          <div className="mt-4 flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded glass border btn-animate"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded bg-indigo-600 text-white btn-animate"
+            >
+              Guardar
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================================
+// MODAL ELIMINAR USUARIO
+// =====================================================================================
+
+function ModalUsuarioEliminar({
+  user,
+  onClose,
+  onConfirm,
+}: {
+  user: User;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
+      <div className="glass max-w-sm w-full p-6 rounded-xl animate-pop">
+        <h2 className="text-lg font-bold mb-4">
+          Eliminar usuario
+        </h2>
+        <p className="text-sm">
+          ¿Deseas eliminar al usuario <b>{user.name || user.email}</b>?
+        </p>
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded glass border btn-animate text-sm"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 rounded bg-red-600 text-white btn-animate text-sm"
+          >
+            Eliminar
           </button>
         </div>
       </div>
