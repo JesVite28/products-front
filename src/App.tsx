@@ -242,7 +242,7 @@ export default function App() {
         return;
       }
 
-      const payload: Product = {
+      const base: any = {
         ...data,
         price: priceNumber,
         stock: stockNumber,
@@ -250,8 +250,14 @@ export default function App() {
         date_buy: data.purchaseDate,
         date_caducity: data.expirationDate,
         provider: data.supplier,
-        image: data.image || "",
       };
+
+      // Solo incluimos image si viene definida desde el modal
+      if (data.image !== undefined) {
+        base.image = data.image;
+      }
+
+      const payload: Product = base;
 
       if (editingProduct) {
         await updateProduct(editingProduct._id!, payload);
@@ -299,7 +305,10 @@ export default function App() {
       setShowProductModal(false);
     } catch (err) {
       console.error("Error al guardar producto:", err);
-      mostrarAlerta("error", IMAGE_ERROR_MSG);
+      mostrarAlerta(
+        "error",
+        "Error al guardar el producto. Revisa los datos o intenta nuevamente."
+      );
     }
   };
 
@@ -1142,22 +1151,36 @@ function ModalProducto({ producto, onClose, onSave }: any) {
       return;
     }
 
-    let imageBase64 = typeof image === "string" ? image : "";
+    const isEditing = !!producto;
+
+    let payloadForSave: any = { ...form };
+
+    // Si el usuario eligió un nuevo archivo, lo convertimos
     if (image instanceof File) {
       try {
-        imageBase64 = await toBase64(image);
+        const imageBase64 = await toBase64(image);
+        payloadForSave.image = imageBase64;
       } catch (err) {
         console.error(err);
         setFileAlert(IMAGE_ERROR_MSG);
         return;
       }
+    } else if (!isEditing) {
+      // Creación: si no hay imagen, mandamos cadena vacía o la que haya
+      if (typeof image === "string" && image.length > 0) {
+        payloadForSave.image = image;
+      } else {
+        payloadForSave.image = "";
+      }
     }
+    // Edición SIN cambiar imagen:
+    // no añadimos campo image, el backend conservará la imagen existente
 
     try {
-      await onSave({ ...form, image: imageBase64 });
+      await onSave(payloadForSave);
     } catch (err) {
       console.error("Error al guardar desde el modal:", err);
-      setFileAlert(IMAGE_ERROR_MSG);
+      setFileAlert("Ocurrió un error al guardar el producto.");
     }
   };
 
@@ -1513,13 +1536,13 @@ function ModalUsuarioEditar({
             <label className="text-gray-200">Rol</label>
             <select
               className="
-    glass border px-3 py-2 rounded 
-    bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
-    text-gray-100 text-sm
-    focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
-    hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
-    cursor-pointer
-  "
+                glass border px-3 py-2 rounded 
+                bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
+                text-gray-100 text-sm
+                focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
+                hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
+                cursor-pointer
+              "
               value={role}
               onChange={(e) =>
                 setRole(e.target.value as "admin" | "moderator" | "user")
@@ -1535,7 +1558,6 @@ function ModalUsuarioEditar({
                 💰 Cajero
               </option>
             </select>
-
           </div>
 
           <div className="mt-4 flex justify-end gap-3">
