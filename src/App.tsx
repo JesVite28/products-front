@@ -118,7 +118,6 @@ export default function App() {
   // EFECTOS
   // =========================
 
-  // Cargar productos o usuarios según la vista y el usuario logueado
   useEffect(() => {
     if (!currentUser) return;
 
@@ -363,7 +362,6 @@ export default function App() {
         setCurrentUser(user);
         mostrarAlerta("success", "Inicio de sesión exitoso ✅");
       } else {
-        // Registro desde la pantalla de autenticación
         const apiAuth = createApiForResource("auth");
         const res = await apiAuth.post("/register", {
           name: authName,
@@ -454,7 +452,7 @@ export default function App() {
   };
 
   // =========================
-  // HANDLERS CRUD USUARIOS
+  // CRUD USUARIOS (incluye rol)
   // =========================
 
   const abrirEditarUsuario = (user: User) => {
@@ -470,10 +468,16 @@ export default function App() {
   const guardarUsuarioEditado = async (payload: {
     name: string;
     email: string;
+    role: "admin" | "moderator" | "user";
   }) => {
     if (!editingUser || !canManageUsers) return;
     try {
-      const updated = await updateUserById(editingUser._id!, payload);
+      const updated = await updateUserById(editingUser._id!, {
+        name: payload.name,
+        email: payload.email,
+        roles: [payload.role], // se envía el rol por nombre
+      });
+
       setUsers((prev) =>
         prev.map((u) => (u._id === updated._id ? updated : u))
       );
@@ -504,7 +508,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black text-gray-100 overflow-x-hidden">
-      {/* Estilos reutilizados */}
       <style>{`
         .glass {
           background: rgba(255, 255, 255, 0.08);
@@ -528,7 +531,6 @@ export default function App() {
         .card-hover:hover .card-buttons { opacity: 1; }
       `}</style>
 
-      {/* ALERTA GLOBAL */}
       {alert && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 z-[9999] p-4 rounded-lg font-semibold animate-pop ${alert.type === "success"
@@ -540,7 +542,6 @@ export default function App() {
         </div>
       )}
 
-      {/* SI NO HAY USUARIO: LOGIN / REGISTRO */}
       {!currentUser ? (
         <div className="min-h-screen flex items-center justify-center px-4">
           <div className="glass w-full max-w-md rounded-xl p-8 animate-pop">
@@ -646,13 +647,11 @@ export default function App() {
         </div>
       ) : (
         <>
-          {/* BARRA INVISIBLE PARA ABRIR MENÚ */}
           <div
             className="fixed top-0 left-0 h-full w-2 z-30"
             onMouseEnter={handleMenuEnter}
           />
 
-          {/* SIDEBAR */}
           <aside
             className={`fixed top-0 left-0 h-full w-64 bg-gray-900/90 glass z-40 p-6 drawer ${menuOpen ? "drawer-open" : "drawer-closed"
               }`}
@@ -724,12 +723,10 @@ export default function App() {
             ></div>
           )}
 
-          {/* CONTENIDO PRINCIPAL */}
           <main
             className={`transition-all duration-300 ${menuOpen ? "ml-64" : ""
               }`}
           >
-            {/* NAVBAR SUPERIOR */}
             <header className="glass border-b fixed w-full top-0 left-0 z-20">
               <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-6">
                 <div className="flex flex-col">
@@ -782,7 +779,6 @@ export default function App() {
 
             <div className="h-20"></div>
 
-            {/* VISTA PRODUCTOS */}
             {activeView === "products" && (
               <section className="max-w-6xl mx-auto px-4 py-6">
                 {products.length === 0 ? (
@@ -856,7 +852,6 @@ export default function App() {
               </section>
             )}
 
-            {/* VISTA USUARIOS */}
             {activeView === "users" && canManageUsers && (
               <section className="max-w-5xl mx-auto px-4 py-6">
                 <div className="glass border rounded-xl p-6">
@@ -930,7 +925,6 @@ export default function App() {
               </section>
             )}
 
-            {/* VISTA AGREGAR USUARIO */}
             {activeView === "addUser" && canManageUsers && (
               <section className="max-w-md mx-auto px-4 py-6">
                 <div className="glass border rounded-xl p-6">
@@ -1014,7 +1008,6 @@ export default function App() {
             )}
           </main>
 
-          {/* MODALES PRODUCTOS */}
           {showProductModal && (
             <ModalProducto
               producto={editingProduct}
@@ -1036,7 +1029,6 @@ export default function App() {
             />
           )}
 
-          {/* MODALES USUARIOS */}
           {editingUser && (
             <ModalUsuarioEditar
               user={editingUser}
@@ -1429,7 +1421,7 @@ function ModalEliminar({ producto, onClose, onConfirm }: any) {
 }
 
 // =====================================================================================
-// MODAL EDITAR USUARIO
+// MODAL EDITAR USUARIO (con selección de rol)
 // =====================================================================================
 
 function ModalUsuarioEditar({
@@ -1439,12 +1431,29 @@ function ModalUsuarioEditar({
 }: {
   user: User;
   onClose: () => void;
-  onSave: (payload: { name: string; email: string }) => void;
+  onSave: (payload: {
+    name: string;
+    email: string;
+    role: "admin" | "moderator" | "user";
+  }) => void;
 }) {
+  const getInitialRole = (): "admin" | "moderator" | "user" => {
+    const rawRoles = user.roles ?? [];
+    const names = rawRoles.map((r: any) =>
+      typeof r === "string" ? r : r.name
+    );
+    if (names.includes("admin")) return "admin";
+    if (names.includes("moderator")) return "moderator";
+    return "user";
+  };
+
   const [form, setForm] = useState({
     name: user.name || "",
     email: user.email || "",
   });
+  const [role, setRole] = useState<"admin" | "moderator" | "user">(
+    getInitialRole()
+  );
   const [error, setError] = useState("");
 
   const handleSubmit = (e: FormEvent) => {
@@ -1453,20 +1462,20 @@ function ModalUsuarioEditar({
       setError("Nombre y correo son obligatorios");
       return;
     }
-    onSave(form);
+    onSave({ name: form.name, email: form.email, role });
   };
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade">
       <div className="glass max-w-sm w-full p-6 rounded-xl animate-pop">
-        <h2 className="text-lg font-bold mb-4">
-          Editar usuario
-        </h2>
+        <h2 className="text-lg font-bold mb-4">Editar usuario</h2>
+
         {error && (
           <div className="mb-3 bg-red-600 text-white px-3 py-2 rounded text-xs">
             {error}
           </div>
         )}
+
         <form onSubmit={handleSubmit} className="space-y-3 text-sm">
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">ID</label>
@@ -1476,6 +1485,7 @@ function ModalUsuarioEditar({
               className="glass border px-3 py-2 rounded text-gray-400 bg-black/40 text-xs"
             />
           </div>
+
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">Nombre</label>
             <input
@@ -1486,6 +1496,7 @@ function ModalUsuarioEditar({
               }
             />
           </div>
+
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">Correo</label>
             <input
@@ -1496,6 +1507,35 @@ function ModalUsuarioEditar({
                 setForm((prev) => ({ ...prev, email: e.target.value }))
               }
             />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">Rol</label>
+            <select
+              className="
+    glass border px-3 py-2 rounded 
+    bg-gradient-to-r from-indigo-900/60 via-slate-900/70 to-emerald-900/60
+    text-gray-100 text-sm
+    focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400
+    hover:bg-gradient-to-r hover:from-indigo-800/70 hover:via-slate-900/80 hover:to-emerald-800/70
+    cursor-pointer
+  "
+              value={role}
+              onChange={(e) =>
+                setRole(e.target.value as "admin" | "moderator" | "user")
+              }
+            >
+              <option className="bg-slate-900 text-gray-100" value="admin">
+                🛡️ Administrador principal
+              </option>
+              <option className="bg-slate-900 text-gray-100" value="moderator">
+                📋 Gerente
+              </option>
+              <option className="bg-slate-900 text-gray-100" value="user">
+                💰 Cajero
+              </option>
+            </select>
+
           </div>
 
           <div className="mt-4 flex justify-end gap-3">
