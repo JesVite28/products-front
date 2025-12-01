@@ -471,6 +471,19 @@ export default function App() {
 
   const abrirEliminarUsuario = (user: User) => {
     if (!canManageUsers) return;
+
+    // 🚫 No permitir eliminar al usuario actualmente logueado
+    if (
+      currentUser &&
+      (currentUser._id === user._id || currentUser.email === user.email)
+    ) {
+      mostrarAlerta(
+        "error",
+        "No puedes eliminar el usuario con el que estás actualmente logueado."
+      );
+      return;
+    }
+
     setDeletingUser(user);
   };
 
@@ -500,6 +513,7 @@ export default function App() {
 
   const confirmarEliminarUsuario = async () => {
     if (!deletingUser || !canManageUsers) return;
+
     try {
       await deleteUserById(deletingUser._id!);
       setUsers((prev) => prev.filter((u) => u._id !== deletingUser._id));
@@ -1173,8 +1187,7 @@ function ModalProducto({ producto, onClose, onSave }: any) {
         payloadForSave.image = "";
       }
     }
-    // Edición SIN cambiar imagen:
-    // no añadimos campo image, el backend conservará la imagen existente
+    // Edición SIN cambiar imagen: no añadimos image, el backend conserva la actual
 
     try {
       await onSave(payloadForSave);
@@ -1457,6 +1470,7 @@ function ModalUsuarioEditar({
   onSave: (payload: {
     name: string;
     email: string;
+    password?: string; // 👈 se queda en el payload aunque no se muestre el campo
     role: "admin" | "moderator" | "user";
   }) => void;
 }) {
@@ -1473,19 +1487,28 @@ function ModalUsuarioEditar({
   const [form, setForm] = useState({
     name: user.name || "",
     email: user.email || "",
+    password: "", // 👈 se mantiene por si luego reactivas el input
   });
-  const [role, setRole] = useState<"admin" | "moderator" | "user">(
-    getInitialRole()
-  );
+
+  const [role, setRole] = useState<"admin" | "moderator" | "user">(getInitialRole());
   const [error, setError] = useState("");
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+
     if (!form.name.trim() || !form.email.trim()) {
       setError("Nombre y correo son obligatorios");
       return;
     }
-    onSave({ name: form.name, email: form.email, role });
+
+    const pass = form.password.trim();
+
+    onSave({
+      name: form.name.trim(),
+      email: form.email.trim(),
+      password: pass.length > 0 ? pass : undefined, // 👈 listo para usarse si luego reactivas el campo
+      role,
+    });
   };
 
   return (
@@ -1531,6 +1554,28 @@ function ModalUsuarioEditar({
               }
             />
           </div>
+
+          {/*
+          // ✅ CAMPO CONTRASEÑA (oculto por ahora)
+          // Si luego lo quieres mostrar, solo quita este comentario.
+
+          <div className="flex flex-col gap-1">
+            <label className="text-gray-200">
+              Nueva contraseña{" "}
+              <span className="text-[0.7rem] text-gray-400">(opcional)</span>
+            </label>
+            <input
+              type="password"
+              className="glass border px-3 py-2 rounded bg-black/40 text-gray-100"
+              value={form.password}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, password: e.target.value }))
+              }
+              placeholder="Dejar vacío para no cambiar"
+              autoComplete="new-password"
+            />
+          </div>
+          */}
 
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">Rol</label>
@@ -1580,6 +1625,7 @@ function ModalUsuarioEditar({
     </div>
   );
 }
+
 
 // =====================================================================================
 // MODAL ELIMINAR USUARIO
