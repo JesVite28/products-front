@@ -36,6 +36,20 @@ const getRoleNames = (user: User | null | undefined): string[] => {
   );
 };
 
+// Mapeo de roles a etiquetas en español
+const roleToSpanish = (role: string) => {
+  switch (role) {
+    case "admin":
+      return "Administrador";
+    case "moderator":
+      return "Gerente";
+    case "user":
+      return "Cajero";
+    default:
+      return "Usuario";
+  }
+};
+
 export default function App() {
   // =========================
   // Estados de AUTENTICACIÓN
@@ -117,6 +131,38 @@ export default function App() {
   // =========================
   // EFECTOS
   // =========================
+
+  // ✅ Mantener sesión y vista al recargar si hay token/usuario guardado
+  useEffect(() => {
+    try {
+      const storedUser = localStorage.getItem("currentUser");
+      if (storedUser) {
+        const parsed = JSON.parse(storedUser) as User;
+        if (parsed && (parsed._id || parsed.email)) {
+          setCurrentUser(parsed);
+        }
+      }
+
+      const storedView = localStorage.getItem("activeView") as View | null;
+      if (storedView === "products" || storedView === "users" || storedView === "addUser") {
+        setActiveView(storedView);
+      }
+    } catch (e) {
+      console.error("Error restaurando sesión/vista:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("activeView", activeView);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem("currentUser", JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem("currentUser");
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -252,7 +298,6 @@ export default function App() {
         provider: data.supplier,
       };
 
-      // Solo incluimos image si viene definida desde el modal
       if (data.image !== undefined) {
         base.image = data.image;
       }
@@ -472,7 +517,6 @@ export default function App() {
   const abrirEliminarUsuario = (user: User) => {
     if (!canManageUsers) return;
 
-    // 🚫 No permitir eliminar al usuario actualmente logueado
     if (
       currentUser &&
       (currentUser._id === user._id || currentUser.email === user.email)
@@ -497,7 +541,7 @@ export default function App() {
       const updated = await updateUserById(editingUser._id!, {
         name: payload.name,
         email: payload.email,
-        roles: [payload.role], // se envía el rol por nombre
+        roles: [payload.role],
       });
 
       setUsers((prev) =>
@@ -552,13 +596,45 @@ export default function App() {
         .card-hover:hover { transform: scale(1.03); box-shadow: 0 15px 25px rgba(0,0,0,0.5); cursor: pointer; }
         .card-buttons { opacity: 0; transition: opacity 0.3s; position: absolute; top: 0.5rem; right: 0.5rem; display: flex; gap:0.5rem; }
         .card-hover:hover .card-buttons { opacity: 1; }
+        .fab {
+          position: fixed;
+          right: 1.25rem;
+          bottom: 1.25rem;
+          width: 3.8rem;
+          height: 3.8rem;
+          border-radius: 9999px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.6rem;
+          font-weight: 700;
+          background: #22c55e;
+          color: white;
+          box-shadow: 0 12px 24px rgba(0,0,0,.45);
+          z-index: 60;
+          transition: transform .2s ease, background-color .2s ease, box-shadow .2s ease;
+        }
+        .fab:hover { transform: scale(1.07); background: #16a34a; box-shadow: 0 16px 30px rgba(0,0,0,.55); }
+        .fab:active { transform: scale(.95); }
+        .fab-label {
+          position: absolute;
+          right: 4.6rem;
+          bottom: 1.15rem;
+          background: rgba(15, 23, 42, .95);
+          border: 1px solid rgba(255,255,255,.12);
+          padding: .45rem .7rem;
+          border-radius: .75rem;
+          font-size: .8rem;
+          white-space: nowrap;
+          color: #e5e7eb;
+        }
       `}</style>
 
       {alert && (
         <div
           className={`fixed top-5 left-1/2 -translate-x-1/2 z-[9999] p-4 rounded-lg font-semibold animate-pop ${alert.type === "success"
-              ? "bg-green-500 text-white"
-              : "bg-red-500 text-white"
+            ? "bg-green-500 text-white"
+            : "bg-red-500 text-white"
             }`}
         >
           {alert.msg}
@@ -728,10 +804,10 @@ export default function App() {
                   </li>
                   <li>
                     <button
-                      onClick={goToAddUser}
-                      className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
+                      onClick={goToUsers}
+                      className="btn-animate w-full text-left text-gray-100 hover:text-cyan-400"
                     >
-                      ➕ Agregar usuario
+                      👥 Usuarios
                     </button>
                   </li>
                 </>
@@ -841,8 +917,8 @@ export default function App() {
                             <div className="mt-3 flex justify-between items-center text-sm">
                               <span
                                 className={`px-2 py-1 rounded-full font-semibold ${stockNumber > 0
-                                    ? "bg-green-600 text-white"
-                                    : "bg-red-600 text-white"
+                                  ? "bg-green-600 text-white"
+                                  : "bg-red-600 text-white"
                                   }`}
                               >
                                 Existencias: {stockNumber}
@@ -900,19 +976,20 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {users.map((u) => {
+                          {users.map((u, index) => {
                             const rNames = getRoleNames(u);
                             const rolesText =
                               rNames.length > 0
-                                ? rNames.join(", ")
-                                : "sin rol";
+                                ? rNames.map(roleToSpanish).join(", ")
+                                : "Usuario";
+
                             return (
                               <tr
                                 key={u._id || u.email}
                                 className="border-b border-gray-800 last:border-b-0"
                               >
-                                <td className="py-2 pr-4 text-gray-400 max-w-[140px] truncate">
-                                  {u._id}
+                                <td className="py-2 pr-4 text-gray-400">
+                                  {index + 1}
                                 </td>
                                 <td className="py-2 pr-4">
                                   {u.name || "-"}
@@ -1016,20 +1093,43 @@ export default function App() {
                       />
                     </div>
 
-                    <button
-                      type="submit"
-                      disabled={newUserLoading}
-                      className="w-full mt-2 py-2 rounded bg-indigo-600 text-white font-semibold btn-animate disabled:opacity-60 text-sm"
-                    >
-                      {newUserLoading
-                        ? "Guardando..."
-                        : "Guardar usuario"}
-                    </button>
+                    {/* ✅ Botones Cancelar + Guardar */}
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={goToUsers}
+                        className="px-4 py-2 rounded glass border btn-animate text-sm"
+                        disabled={newUserLoading}
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={newUserLoading}
+                        className="px-4 py-2 rounded bg-indigo-600 text-white font-semibold btn-animate disabled:opacity-60 text-sm"
+                      >
+                        {newUserLoading
+                          ? "Guardando..."
+                          : "Guardar usuario"}
+                      </button>
+                    </div>
                   </form>
                 </div>
               </section>
             )}
           </main>
+
+          {canManageUsers && activeView === "users" && (
+            <button
+              onClick={goToAddUser}
+              className="fab"
+              aria-label="Agregar usuario"
+              title="Agregar usuario"
+            >
+              +
+              <span className="fab-label">Agregar usuario</span>
+            </button>
+          )}
 
           {showProductModal && (
             <ModalProducto
@@ -1169,7 +1269,6 @@ function ModalProducto({ producto, onClose, onSave }: any) {
 
     let payloadForSave: any = { ...form };
 
-    // Si el usuario eligió un nuevo archivo, lo convertimos
     if (image instanceof File) {
       try {
         const imageBase64 = await toBase64(image);
@@ -1180,14 +1279,12 @@ function ModalProducto({ producto, onClose, onSave }: any) {
         return;
       }
     } else if (!isEditing) {
-      // Creación: si no hay imagen, mandamos cadena vacía o la que haya
       if (typeof image === "string" && image.length > 0) {
         payloadForSave.image = image;
       } else {
         payloadForSave.image = "";
       }
     }
-    // Edición SIN cambiar imagen: no añadimos image, el backend conserva la actual
 
     try {
       await onSave(payloadForSave);
@@ -1389,8 +1486,8 @@ function ModalDetalle({ producto, onClose }: any) {
             <b>Existencias:</b>
             <span
               className={`px-2 py-1 rounded-full font-semibold text-xs ${stockNumber > 0
-                  ? "bg-green-600 text-white"
-                  : "bg-red-600 text-white"
+                ? "bg-green-600 text-white"
+                : "bg-red-600 text-white"
                 }`}
             >
               {stockNumber}
@@ -1470,7 +1567,7 @@ function ModalUsuarioEditar({
   onSave: (payload: {
     name: string;
     email: string;
-    password?: string; // 👈 se queda en el payload aunque no se muestre el campo
+    password?: string;
     role: "admin" | "moderator" | "user";
   }) => void;
 }) {
@@ -1487,7 +1584,7 @@ function ModalUsuarioEditar({
   const [form, setForm] = useState({
     name: user.name || "",
     email: user.email || "",
-    password: "", // 👈 se mantiene por si luego reactivas el input
+    password: "",
   });
 
   const [role, setRole] = useState<"admin" | "moderator" | "user">(getInitialRole());
@@ -1506,7 +1603,7 @@ function ModalUsuarioEditar({
     onSave({
       name: form.name.trim(),
       email: form.email.trim(),
-      password: pass.length > 0 ? pass : undefined, // 👈 listo para usarse si luego reactivas el campo
+      password: pass.length > 0 ? pass : undefined,
       role,
     });
   };
@@ -1554,28 +1651,6 @@ function ModalUsuarioEditar({
               }
             />
           </div>
-
-          {/*
-          // ✅ CAMPO CONTRASEÑA (oculto por ahora)
-          // Si luego lo quieres mostrar, solo quita este comentario.
-
-          <div className="flex flex-col gap-1">
-            <label className="text-gray-200">
-              Nueva contraseña{" "}
-              <span className="text-[0.7rem] text-gray-400">(opcional)</span>
-            </label>
-            <input
-              type="password"
-              className="glass border px-3 py-2 rounded bg-black/40 text-gray-100"
-              value={form.password}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, password: e.target.value }))
-              }
-              placeholder="Dejar vacío para no cambiar"
-              autoComplete="new-password"
-            />
-          </div>
-          */}
 
           <div className="flex flex-col gap-1">
             <label className="text-gray-200">Rol</label>
@@ -1625,7 +1700,6 @@ function ModalUsuarioEditar({
     </div>
   );
 }
-
 
 // =====================================================================================
 // MODAL ELIMINAR USUARIO
