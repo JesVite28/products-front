@@ -26,7 +26,7 @@ import { createApiForResource } from "./services/api";
 const IMAGE_ERROR_MSG =
   "por favor seleccione una imagen con el formato válido no mayor a 5mb";
 
-type View = "products" | "users" | "addUser";
+type View = "products" | "users" | "addUser" | "addProduct";
 
 // Helper para extraer nombres de roles
 const getRoleNames = (user: User | null | undefined): string[] => {
@@ -417,20 +417,47 @@ export default function App() {
         mostrarAlerta("success", "Inicio de sesión exitoso ✅");
       } else {
         const apiAuth = createApiForResource("auth");
-        const res = await apiAuth.post("/register", {
+        await apiAuth.post("/register", {
           name: authName,
           email: authEmail,
           password: authPassword,
         });
-        const { data } = res.data;
-        setCurrentUser(data as User);
-        mostrarAlerta("success", "Usuario registrado y logueado ✅");
+
+        // No iniciar sesión automáticamente tras el registro.
+        // En su lugar, mostrar mensaje y regresar a la vista de login.
+        mostrarAlerta(
+          "success",
+          "Usuario registrado correctamente. Por favor inicia sesión ✅"
+        );
+        setAuthMode("login");
+        setAuthPassword("");
+        setAuthName("");
       }
 
       setAuthPassword("");
     } catch (err) {
       console.error("Error en autenticación:", err);
-      setAuthError("Credenciales inválidas o error en el servidor");
+
+      const e: any = err;
+      // Si la respuesta viene del servidor, tratar de obtener información
+      const status: number | undefined = e?.response?.status;
+      const serverMessage: string | undefined = e?.response?.data?.message || e?.message;
+
+      if (authMode === "register") {
+        if (status === 409) {
+          setAuthError("El usuario ya existe");
+        } else if (serverMessage && /exist|already|duplicate|duplicado/i.test(serverMessage)) {
+          setAuthError("El usuario ya existe");
+        } else if (serverMessage) {
+          setAuthError(serverMessage);
+        } else {
+          setAuthError("Error en el servidor al registrar");
+        }
+      } else {
+        // Login u otros errores
+        if (serverMessage) setAuthError(serverMessage);
+        else setAuthError("Credenciales inválidas o error en el servidor");
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -763,22 +790,12 @@ export default function App() {
                 <>
                   <li>
                     <button
-                      onClick={verTodos}
+                      onClick={goToProducts}
                       className="btn-animate w-full text-left text-gray-100 hover:text-indigo-400"
                     >
-                      📦 Ver todos los productos
+                      📦 Productos
                     </button>
                   </li>
-                  {canManageProducts && (
-                    <li>
-                      <button
-                        onClick={abrirAgregar}
-                        className="btn-animate w-full text-left text-gray-100 hover:text-green-400"
-                      >
-                        ➕ Agregar producto
-                      </button>
-                    </li>
-                  )}
                   {canManageUsers && (
                     <li>
                       <button
@@ -1118,6 +1135,18 @@ export default function App() {
               </section>
             )}
           </main>
+
+          {canManageProducts && activeView === "products" && (
+            <button
+              onClick={abrirAgregar}
+              className="fab"
+              aria-label="Agregar producto"
+              title="Agregar producto"
+            >
+              +
+              <span className="fab-label">Agregar producto</span>
+            </button>
+          )}
 
           {canManageUsers && activeView === "users" && (
             <button
